@@ -596,6 +596,8 @@ class MainWindow(QMainWindow):
         ("Gen. Quotation", "quote_gen", "file", None),
         ("Quotation List", "quote_list", "list", None),
         ("Whatsapp", "whatsapp", "whatsapp", None),
+
+        ("Facebook Scraper", "facebook_scraper", "whatsapp", None),
         ("Manage Invoice", None, "folderopen", [
             ("Proforma Invoice List", "proforma_list", "file"),
             ("Tax Invoice List", "tax_list", "file"),
@@ -864,6 +866,8 @@ class MainWindow(QMainWindow):
         from ui.pages.sales_prediction_page import SalesPredictionPage
         from ui.pages.settings_page import SettingsPage
 
+        from ui.pages.facebook_scraper_page import FacebookScraperPage
+
         factories = {
             "dashboard": lambda: DashboardPage(self),
             "clients": lambda: ClientsPage(self),
@@ -905,6 +909,10 @@ class MainWindow(QMainWindow):
                                                   "Proforma Report"),
             "sales_prediction": lambda: SalesPredictionPage(self),
             "settings": lambda: SettingsPage(self),
+
+
+            "facebook_scraper": lambda: FacebookScraperPage(self),
+
         }
         return factories[key]() if key in factories else None
 
