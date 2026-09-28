@@ -1,140 +1,525 @@
-# C4 PyQt — Desktop Replica
+# 🚀 Sales Aura
 
-A **PyQt6 desktop application** that replicates the CodeIgniter 4 C4
-invoice/quotation management system (`c:\xampp\htdocs\C4`) **keeping the same
-AdminLTE UI** (dark sidebar, blue header, stat boxes, DataTables-style lists)
-and the **same MySQL database** (`db` on localhost, per the original `.env`).
+### PyQt6 + MySQL Business Management, Invoicing & Sales Prediction System
 
-The PHP project remains untouched — all PyQt files live in this folder only.
+**Sales Aura** is a modern desktop business management and invoicing application built with **Python, PyQt6 and MySQL**.
 
-## Run
+It brings sales, purchasing, quotations, invoicing, customer management, accounts, inventory-related operations, reports and **sales prediction** together in a single desktop application.
+
+The project is designed for small and medium-sized businesses that need a practical desktop solution for managing their day-to-day sales and billing operations while also turning historical sales data into actionable insights.
+
+---
+
+## ✨ Key Features
+
+### 🧾 Invoice Management
+
+* Tax Invoice generation and management
+* Proforma Invoice
+* Quotation
+* Quick Quotation
+* Purchase Invoice
+* Invoice editing and deletion
+* Invoice viewing
+* Print Preview
+* PDF-ready invoice printing
+* Financial-year based invoice numbering
+* GST / tax calculation support
+* Automatic subtotal, tax and grand-total calculations
+
+---
+
+### 👥 Customer & Supplier Management
+
+Manage customers and suppliers from a centralized interface.
+
+* Add customers
+* Edit customer information
+* Delete customers
+* Customer information pages
+* Supplier management
+* Customer/Supplier classification
+* Searchable customer selection
+* Customer transaction history
+* Supplier transaction history
+
+---
+
+### 📦 Product Management
+
+Maintain your product catalog from within the application.
+
+* Product creation
+* Product editing
+* Product deletion
+* Product information
+* Product pricing
+* HSN code support
+* Product-related transaction information
+
+---
+
+### 💰 Accounts & Ledger
+
+Sales Aura includes an integrated account and ledger system for tracking business transactions.
+
+* Customer accounts
+* Supplier accounts
+* Opening balance
+* Credit transactions
+* Debit transactions
+* Closing balance
+* Ledger view
+* Financial-year based accounting
+* Transaction history
+* Account summaries
+
+---
+
+### 📊 Sales & Business Reports
+
+Analyze your business data through dedicated reporting pages.
+
+Supported reporting areas include:
+
+* Sales reports
+* Purchase reports
+* Quotation reports
+* Transaction reports
+* Account reports
+* Customer-related reports
+* Product-related information
+* Financial-year based reporting
+* Export-ready report data
+
+---
+
+### 🤖 Sales Prediction
+
+One of the main features of Sales Aura is its **Sales Prediction** module.
+
+The system uses historical sales information to help transform business transaction data into useful insights.
+
+The module is designed to support:
+
+* Historical sales analysis
+* Sales trends
+* Sales forecasting
+* Prediction dashboards
+* Data-driven business analysis
+* Future sales planning
+
+> Sales prediction results should be treated as analytical estimates and not guaranteed future outcomes.
+
+---
+
+### 📈 Dashboard & Analytics
+
+The dashboard provides an overview of important business information.
+
+Depending on the configured data, the dashboard can provide information related to:
+
+* Sales turnover
+* Purchase activity
+* Tax/GST information
+* Business transactions
+* Customer activity
+* Product activity
+* Sales trends
+* Prediction insights
+
+---
+
+### 🔎 Smart DataTables-Style Interfaces
+
+List pages provide a DataTables-inspired experience.
+
+Features include:
+
+* Search
+* Pagination
+* First / Previous / Next / Last navigation
+* Page numbers
+* Rows per page
+* 10 / 25 / 50 / 100 / All entries
+* Entry counters
+* Filtered totals
+* Visible-page totals
+* Fast client-side page rendering
+
+---
+
+### 🖨️ Printing & PDF
+
+Sales Aura provides printing functionality for business documents.
+
+Supported document workflows include:
+
+* Tax Invoice
+* Proforma Invoice
+* Quotation
+* Quick Quotation
+* Purchase Invoice
+
+Documents can be opened through print preview and prepared for PDF/physical printing.
+
+---
+
+## 🏗️ Application Modules
+
+| Module              | Description                          |
+| ------------------- | ------------------------------------ |
+| 🏠 Dashboard        | Business overview and analytics      |
+| 👥 Clients          | Customer management                  |
+| 🏭 Suppliers        | Supplier management                  |
+| 📦 Products         | Product catalog                      |
+| 🧾 Tax Invoice      | Sales invoice management             |
+| 📄 Proforma         | Proforma invoice management          |
+| 💬 Quotation        | Quotation management                 |
+| ⚡ Quick Quotation   | Fast quotation workflow              |
+| 🛒 Purchase         | Purchase invoice management          |
+| 💳 Transactions     | Payment/transaction management       |
+| 📚 Accounts         | Account and ledger management        |
+| 📊 Reports          | Sales, purchase and business reports |
+| 🤖 Sales Prediction | Sales analysis and forecasting       |
+| ⚙️ Settings         | Application/company settings         |
+
+---
+
+## 🛠️ Technology Stack
+
+### Desktop Application
+
+* **Python 3**
+* **PyQt6**
+* **PyMySQL**
+
+### Database
+
+* **MySQL / MariaDB**
+
+### Application Architecture
+
+* PyQt6 desktop UI
+* Modular page architecture
+* MySQL database layer
+* Reusable utility functions
+* Invoice/document rendering
+* Financial-year based business logic
+
+---
+
+## 📁 Project Structure
+
+```text
+pyqt_app/
+│
+├── database/
+│   └── db_manager.py
+│
+├── dist/
+│   └── img/
+│
+├── tools/
+│   └── make_brand_logo.py
+│
+├── ui/
+│   ├── pages/
+│   │   ├── accounts_page.py
+│   │   ├── dashboard_page.py
+│   │   ├── invoice_pages.py
+│   │   ├── master_pages.py
+│   │   ├── quickquote_page.py
+│   │   ├── reports_page.py
+│   │   ├── sales_prediction_page.py
+│   │   ├── settings_page.py
+│   │   └── transaction_page.py
+│   │
+│   ├── login_window.py
+│   ├── main_window.py
+│   ├── splash_screen.py
+│   ├── app_icon.py
+│   └── icons.py
+│
+├── utils/
+│   ├── helpers.py
+│   └── invoice_print.py
+│
+├── config.py
+├── db.sql
+├── main.py
+├── requirements.txt
+├── smoke_test.py
+└── README.md
+```
+
+---
+
+# 🚀 Installation
+
+## 1. Clone the Repository
+
+```bash
+git clone https://github.com/reputed-artist/PYQT-MYSQL-INVOICE-QUOTATION-PROFORMA-PURCHASE-INVOICE-MANAGEMENT-WITH-SALES-PREDICTION-SYSTEM.git
+```
+
+Move into the project directory:
+
+```bash
+cd PYQT-MYSQL-INVOICE-QUOTATION-PROFORMA-PURCHASE-INVOICE-MANAGEMENT-WITH-SALES-PREDICTION-SYSTEM
+```
+
+---
+
+## 2. Create a Virtual Environment
+
+Windows:
 
 ```powershell
-cd c:\xampp\htdocs\C4\pyqt_app
-pip install -r requirements.txt   # PyQt6, PyMySQL (already installed)
+python -m venv venv
+```
+
+Activate it:
+
+```powershell
+venv\Scripts\activate
+```
+
+---
+
+## 3. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+The repository already contains a `requirements.txt` file for the Python dependencies.
+
+---
+
+# 🗄️ Database Setup
+
+Sales Aura requires a MySQL/MariaDB database.
+
+### 1. Create a database
+
+For example:
+
+```sql
+CREATE DATABASE db;
+```
+
+### 2. Import the database
+
+Import:
+
+```text
+db.sql
+```
+
+using phpMyAdmin, MySQL Workbench or the MySQL command line.
+
+Example:
+
+```bash
+mysql -u root -p db < db.sql
+```
+
+---
+
+# ⚙️ Database Configuration
+
+Update the database configuration in:
+
+```text
+config.py
+```
+
+Example:
+
+```python
+DB_HOST = "localhost"
+DB_NAME = "db"
+DB_USER = "root"
+DB_PASSWORD = ""
+```
+
+Adjust these values according to your MySQL/MariaDB installation.
+
+---
+
+# ▶️ Run Sales Aura
+
+Start the application using:
+
+```bash
 python main.py
 ```
 
-Login uses the `admin` table, e.g. `admin@gmail.com` / `admin@123`.
+The application will launch the Sales Aura desktop interface.
 
-## Branding / icons
+---
 
-- **Title bar + taskbar**: every window of the app (splash, login, main window,
-  dialogs, message boxes) shows the **Sales Aura** mark, not the legacy CodeTech
-  logo. `ui/app_icon.py` resolves it in this order:
+# 🔐 Login
 
-  1. `C4_APP_ICON` (environment variable) - override for testing
-  2. `dist/img/sales-aura-icon.png` - the brand mark (white chip + blue/violet "S",
-     ascending bars and rising arrow), rasterised at 16/20/24/32/48/64/128/256 px
-  3. the company logo on the `admin` row (`picturelogo`), then `APP_ICON_NAMES`
-  4. a QPainter-drawn mark, so a branded icon always exists
+```plaintext
+Email: admin@gmail.com
+Password: admin@123
+```
 
-  `dist/img/sales-aura.png` (plain mark, transparent) is what the splash screen
-  draws. Both PNGs are generated - re-run this after changing the mark:
+> **Security:** Do not publish real production credentials in this repository. Change any default development password before using the application in a production environment.
 
-  ```powershell
-  python tools/make_brand_logo.py              # writes both PNGs
-  python tools/make_brand_logo.py --preview %TEMP%\aura   # size previews
-  ```
+---
 
-- **Message boxes carry the icon of their kind**, drawn vector-style by
-  `ui/icons.py` (`kind_icon()`) and applied through `ui.app_icon.apply(window, icon)`:
+# 🧪 Testing
 
-  | helper | title bar | dialog body |
-  |--------|-----------|-------------|
-  | `W.confirm()` | blue disc + `?` | Question |
-  | `W.success()` | green disc + tick | green tick pixmap |
-  | `W.info()` | aqua disc + `i` | Information |
-  | `W.warning()` | amber disc + `!` | Warning |
-  | `W.error()` | red disc + `x` | Critical |
+A smoke test is included to verify that the application can start and construct the major application pages.
 
-  Dialog windows that are not message boxes (crud dialog, invoice View, print
-  previews, ledger, info-page view) call `apply()`/`W.apply()` so their title bar
-  carries the brand mark too.
+Run:
 
-## Replicated modules (PHP → PyQt)
+```bash
+python main.py
+```
 
-| Original (CodeIgniter)                      | PyQt file                                    |
-|---------------------------------------------|----------------------------------------------|
-| `Login.php` (AdminLTE login page)           | `ui/login_window.py`                         |
-| `Include/header.php` + `Include/sidebar.php`| `ui/main_window.py`                          |
-| `Dashboard` controller + layout             | `ui/pages/dashboard_page.py`                 |
-| `Client.php` (Manage Clients)               | `ui/pages/master_pages.py` (`ClientsPage`)   |
-| `supplier.php` (Suppliers)                  | `ui/pages/master_pages.py` (`SuppliersPage`) |
-| `Product.php` (Products)                    | `ui/pages/master_pages.py` (`ProductsPage`)  |
-| `Taxinv.php` (Gen. Tax Invoice / List)      | `ui/pages/invoice_pages.py` (doc="tax")      |
-| `Proinv.php` (Proforma Invoice)             | `ui/pages/invoice_pages.py` (doc="proforma") |
-| `Quote.php` (Gen. Quotation / List)         | `ui/pages/invoice_pages.py` (doc="quote")    |
-| `Purchaseinv.php` (Add Purchase / List)     | `ui/pages/invoice_pages.py` (doc="purchase") |
-| `Quickquote.php` (Quick Quotation)          | `ui/pages/quickquote_page.py`                |
-| `Transaction.php` (Transactions/payments)   | `ui/pages/transaction_page.py`               |
-| Sale/Purchase/Quote reports (9 views)       | `ui/pages/reports_page.py`                   |
-| `Account.php` (Accounts, types, ledger)     | `ui/pages/accounts_page.py`                  |
-| `Salesprediction.php`                       | `ui/pages/sales_prediction_page.py`          |
-| `Profile.php` (Settings)                    | `ui/pages/settings_page.py`                  |
-| `print taxinv/quote/quickq*.php` views      | `utils/invoice_print.py` (print preview/PDF) |
-| `getclientinfo.php` /                    | `ui/pages/info_pages.py`                     |
-| `getsupplierinfo.php` /                  |                                              |
-| `getproductinfo.php` (Info layout)       |                                              |
-| All `*_model.php` models                    | `database/db_manager.py`                     |
-| helpers (money_format, FY logic)            | `utils/helpers.py`                           |
+The test covers application startup, login/database interaction and page construction.
 
-## Notes
+---
 
-- **Database**: reads `config.py` (`localhost` / `db` / `root` / empty
-  password) — same tables as `db.sql` (invtest/invtest2, protest/protest2,
-  quote/quote2, purchaseinv/purchaseinv2, quickquote, client, products,
-  paidhistory, account, acc_type, admin, bankdetails, techsps).
-- **Invoice numbering** follows the original financial-year logic
-  (`INV/24-25/0007`, `QT/…`, `PI/…`, `PUR/…`, `QUICKT/…`).
-- **Quotation items table** has no HSN/Description columns in the original
-  schema; the app adapts automatically.
-- **DataTables behaviour** on every list page (Accounts, Manage Clients,
-  Suppliers, Products, all invoice lists, Transactions, Quick Quote and all
-  reports):
-  - **Sr No** column numbered from 1 and continuing across pages
-    (page 2 starts at 11 when 10 rows per page)
-  - **Pagination bar**: First / ‹ / page numbers / › / Last, with an
-    ellipsis window when there are many pages, and the current page
-    highlighted in AdminLTE blue
-  - **"Showing X to Y of Z entries"** counter
-  - **Rows-per-page selector**: 10 / 25 / 50 / 100 / All
-  - Page clicks re-render instantly from cached rows (no DB round-trip);
-    the date-range/search filters re-query the database
-  - In-table **totals row** = totals of the visible page;
-    the **footer label** = overall totals for all filtered records
-- Invoices support View / Print (print preview + PDF) / Edit / Delete.
-- **Info pages** (the per-row *Info* button on Manage Clients / Suppliers /
-  Products) port `getclientinfo.php` / `getsupplierinfo.php` /
-  `getproductinfo.php`: a details box + an FY summary box, then one box per
-  document type holding a paginated invoice table (with the DataTables
-  totals row).
+# 🎨 Sales Aura Branding
 
-## Tests
+Sales Aura includes its own application branding and icon system.
 
-- `python smoke_test.py` — boots the login window, signs in against the live
-  database, builds the main window and every page, then verifies:
-  - header/sidebar layout geometry (header spans the top, sidebar below-left)
-  - all **29 navigation targets** plus the 3 **info pages** build cleanly
-  - the dashboard `refresh()` runs twice in a row. This is a regression
-    guard: the dashboard body lives inside a `QScrollArea`, so the scroll
-    area **must** be wired into the page layout (`scroll.setWidget(inner)` /
-    `lay.addWidget(scroll)`). While it was not, every child `QLabel` was
-    orphaned and collected, and `refresh()` died with *"wrapped C/C++ object
-    of type QLabel has been deleted"*.
-  - Clients-table pagination (numbered page buttons, Next/Prev, rows-per-page,
-    Last, and Sr No continuing across pages)
-  - the info-page invoice tables (visible page rows + the totals row)
+The application icon can be generated using:
 
-  Results go to `smoke_result.txt` (UTF-8). Current status: **0 failures**.
-- `python test_app_icons.py` — headless title-bar icon test (**no database
-  needed**): the brand mark resolves and rasterises at every icon size, every
-  message kind draws a *distinct* icon, `confirm / success / info / warning /
-  error` put that kind's icon on the message-box **title bar** (while the success
-  dialog keeps its green right-tick in the body), and `apply()` brands the login
-  window, the splash and plain dialogs. Add `--preview DIR` to dump the drawn
-  icons as PNGs. Results go to `icon_test_result.txt`. Current status: **0
-  failures**.
-- `python write_test.py` — exercises the write path against the live database
-  (insert → read-back → update → list search → item report → delete) and
-  cleans up after itself (`write_test_result.txt`).
+```bash
+python tools/make_brand_logo.py
+```
+
+To generate preview sizes:
+
+```bash
+python tools/make_brand_logo.py --preview %TEMP%\aura
+```
+
+The application supports branded icons across:
+
+* Splash screen
+* Login window
+* Main window
+* Dialogs
+* Message boxes
+* Print previews
+* Information pages
+
+---
+
+# 📑 Supported Business Documents
+
+Sales Aura currently supports the following document workflows:
+
+```text
+Tax Invoice
+     │
+     ├── Create
+     ├── View
+     ├── Edit
+     ├── Print
+     └── Delete
+
+Proforma Invoice
+     │
+     ├── Create
+     ├── View
+     ├── Edit
+     └── Print
+
+Quotation
+     │
+     ├── Create
+     ├── View
+     ├── Edit
+     └── Print
+
+Quick Quotation
+     │
+     ├── Create
+     ├── View
+     └── Print
+
+Purchase Invoice
+     │
+     ├── Create
+     ├── View
+     ├── Edit
+     └── Print
+```
+
+---
+
+
+---
+
+# 🧠 Sales Intelligence
+
+Sales Aura is not limited to traditional billing.
+
+The long-term goal of the project is to combine:
+
+```text
+Business Transactions
+        ↓
+Historical Sales Data
+        ↓
+Analytics
+        ↓
+Sales Trends
+        ↓
+Prediction
+        ↓
+Business Insights
+```
+
+This makes the system useful not only for recording transactions but also for understanding business performance.
+
+---
+
+
+
+# 🤝 Contributing
+
+Contributions, suggestions and bug reports are welcome.
+
+
+# 📜 License
+
+This project is licensed under the **MIT License** unless otherwise specified in the repository.
+
+
+# 👨‍💻 Developer
+
+Developed by **Tejas Chavda**
+
+**Tejaschavda2020@gmail.com**
+
+---
+
+# ⭐ Support the Project
+
+If you find **Sales Aura** useful:
+
+⭐ Star the repository on GitHub
+
+🐛 Report bugs
+
+💡 Suggest improvements
+
+🔧 Contribute code
+
+📢 Share the project with other developers and businesses
+
+---
+
+
+### Sales Aura
+
+> **Invoices · Insights · Intelligence**
