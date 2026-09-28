@@ -1,0 +1,31 @@
+OK   brand mark resolves -> sales-aura-icon.png
+OK   app_icon() is not null
+OK   app_icon() pixmaps at every size -> 16:ok, 20:ok, 24:ok, 32:ok, 48:ok, 64:ok, 128:ok
+OK   every kind has its own icon -> success, confirm, info, warning, error
+OK   success kind == check_pixmap()
+OK   kind_icon() carries every size
+OK   confirm(): title-bar icon -> title='Confirm' icon built for confirm
+OK   confirm(): dialog body icon -> Icon.Question
+OK   confirm(): 16 px disc colour -> #3b8bba
+OK   success(): title-bar icon -> title='Success' icon built for success
+OK   success(): dialog body icon -> Icon.NoIcon
+OK   success(): 16 px disc colour -> #00a459
+OK   info(): title-bar icon -> title='Info' icon built for info
+OK   info(): dialog body icon -> Icon.Information
+OK   info(): 16 px disc colour -> #00beec
+OK   warning(): title-bar icon -> title='Warning' icon built for warning
+OK   warning(): dialog body icon -> Icon.Warning
+OK   warning(): 16 px disc colour -> #f09a12
+OK   error(): title-bar icon -> title='Error' icon built for error
+OK   error(): dialog body icon -> Icon.Critical
+OK   error(): 16 px disc colour -> #da4a38
+OK   success(): green tick in the dialog body
+OK   no kind -> brand app icon
+OK   login window title bar -> Log in
+OK   splash taskbar icon
+OK   apply(window) -> brand icon
+OK   apply(dialog) -> system menu hint
+OK   apply(window, icon) -> explicit icon wins
+previews written to C:\Users\Hacker\AppData\Local\Temp\aura_icons
+
+Icon test finished - 0 failures
