@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
 from database import db_manager
 from ui import widgets as W
 from utils.helpers import money
+from config import UPLOAD_DIR as _CFG_UPLOAD_DIR
 
 
 # --------------------------------------------------------------------------- #
@@ -39,8 +40,23 @@ def _app_base_dir() -> str:
 
 APP_BASE   = _app_base_dir()
 IMG_DIR    = os.path.join(APP_BASE, "dist", "img")
-UPLOAD_DIR = os.path.join(IMG_DIR, "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Where uploads are WRITTEN. Deliberately NOT the folder above: in a frozen
+# build IMG_DIR points inside `Program Files\Sales Aura\internal`, which is
+# read-only for a normal user, so saving the profile picture or company logo
+# there failed with "[Errno 13] Permission denied". config.UPLOAD_DIR resolves
+# to %LOCALAPPDATA%\Sales Aura\uploads when frozen, and to the project's own
+# dist/img/uploads when running from source.
+UPLOAD_DIR = _CFG_UPLOAD_DIR
+
+# Search the writable folder first (that is where a new upload lands), and keep
+# the old read-only locations so pictures uploaded before this change - or by
+# the PHP app - still display.
+_UPLOAD_SEARCH_DIRS = [
+    UPLOAD_DIR,
+    os.path.join(IMG_DIR, "uploads"),
+    IMG_DIR,
+]
 
 
 def _resolve_upload(name: str) -> str:
@@ -48,8 +64,13 @@ def _resolve_upload(name: str) -> str:
         return ""
     v = str(name).strip().replace("\\", "/")
     base = os.path.basename(v)
-    candidate = os.path.join(UPLOAD_DIR, base)
-    return candidate if os.path.isfile(candidate) else ""
+    if os.path.isfile(v):
+        return os.path.abspath(v)
+    for folder in _UPLOAD_SEARCH_DIRS:
+        candidate = os.path.join(folder, base)
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
 
 
 def _resolve_image(name: str) -> str:
@@ -733,19 +754,24 @@ class SettingsPage(QWidget):
         self.p_prof_lbl.setText(admin.get("profession", "") or "")
 
         # ---- stats ----
+        # NOTE: the function in db_manager is `dashboard_stats()`. This used to
+        # call a non-existent `get_dashboard_stats()`, whose AttributeError was
+        # swallowed by the `except` below - leaving `stats` empty and every
+        # counter stuck at 0. Queried straight from SQLite so the card always
+        # reflects the live data.
         try:
-            stats = db_manager.get_dashboard_stats()
+            stats = db_manager.dashboard_stats() or {}
         except Exception:
             stats = {}
 
-        # map card keys to the keys your db_manager returns.
-        # change the right-hand side strings if your API uses other names.
+        # Card key -> key returned by db_manager.dashboard_stats().
+        # "Sales"/"Purchases" are rupee amounts (the card formats them with
+        # money()), so they map to *_amount and NOT to the document counts.
         stat_sources = {
             "clients":   stats.get("clients", 0),
             "products":  stats.get("products", 0),
-            "sales":     stats.get("sales", stats.get("sales_amount", 0)),
-            "purchases": stats.get("purchases",
-                                   stats.get("purchase_amount", 0)),
+            "sales":     stats.get("sales_amount", 0),
+            "purchases": stats.get("purchase_amount", 0),
         }
         for key, val in stat_sources.items():
             try:
@@ -946,7 +972,8 @@ class SettingsPage(QWidget):
             self._refresh_avatar()
             W.info(self, "Profile picture updated.")
         except Exception as exc:
-            W.error(self, f"Upload failed: {exc}")
+            W.error(self, "Upload failed: %s\n\nSaving to:\n%s"
+                    % (exc, UPLOAD_DIR))
 
     def _upload_company_logo(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -963,7 +990,8 @@ class SettingsPage(QWidget):
             self._refresh_logo()
             W.info(self, "Company logo updated.")
         except Exception as exc:
-            W.error(self, f"Upload failed: {exc}")
+            W.error(self, "Upload failed: %s\n\nSaving to:\n%s"
+                    % (exc, UPLOAD_DIR))
 
     # =====================================================================
     #  Backup / restore

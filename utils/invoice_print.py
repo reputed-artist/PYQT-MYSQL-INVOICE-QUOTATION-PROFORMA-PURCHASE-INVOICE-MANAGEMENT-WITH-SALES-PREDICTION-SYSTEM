@@ -66,6 +66,21 @@ def _brand(widget):
 
 
 # --------------------------------------------------------------------------- #
+# Preview warm-up — REMOVED (was crashing the app, see note in main.py)
+# --------------------------------------------------------------------------- #
+
+
+def warm_preview_cache():
+    """REMOVED: never touch QtWebEngine off the GUI thread.
+
+    Initializing the Chromium profile from a QThread hard-crashed the whole
+    app on the first invoice preview, so this warm-up is permanently a no-op.
+    Kept only as a safe stub in case an old caller still references it.
+    """
+    return True
+
+
+# --------------------------------------------------------------------------- #
 # App base folder  (…/pyqt_app/)
 #
 # Walks up from this module's file location to find the folder that
@@ -615,6 +630,55 @@ def _build_tax_summary(c_type, taxrate, taxamount, subtotal, totalamount,
 
 
 # =========================================================================== #
+# Shared invoice page CSS  (centered on A4)
+#
+# NOTE: we do NOT use `table-layout: fixed` here because the invoice tables
+# rely on <col width="..."> hints to size their 8 columns. Forcing fixed
+# layout overrides those hints and breaks the tax / purchase layouts.
+#
+# Centering works because:
+#   1. body uses flexbox to center its child.
+#   2. table.invoice uses margin auto for horizontal centering.
+#   3. The sticker image is constrained to width:100% so it can't force
+#      the table wider than A4.
+# =========================================================================== #
+_INVOICE_PAGE_CSS = """
+  @page { size: A4 portrait; margin: 0; }
+  html, body {
+      margin: 0; padding: 0; background: #ffffff;
+      width: 100%;
+  }
+  body {
+      font-family: calibri, 'Segoe UI', Arial, sans-serif;
+      font-size: 10pt; color: #000000;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+  }
+  td { padding-left: 2px; }
+  table { border-collapse: collapse; }
+  img { image-rendering: -webkit-optimize-contrast; }
+  page {
+      display: block;
+      width: 21cm;
+      min-height: 29.7cm;
+      background: white;
+      margin: 0 auto;
+      padding: 0;
+  }
+  table.invoice {
+      margin: 10px auto 0 auto;
+  }
+  table.invoice img.sticker {
+      display: block;
+      max-width: 788px;
+      width: 100%;
+      height: auto;
+  }
+"""
+
+
+# =========================================================================== #
 # TAX / PROFORMA INVOICE
 # =========================================================================== #
 def build_tax_invoice_html(doc, master, items, admin=None, banks=None,
@@ -644,35 +708,42 @@ def build_tax_invoice_html(doc, master, items, admin=None, banks=None,
 
     parts = []
     parts.append(f"""<html><head><meta charset="utf-8"><style>
-      @page {{ size: A4 portrait; margin: 0; }}
-      html, body {{ margin:0; padding:0; background:#ffffff; }}
-      body {{ font-family:calibri, 'Segoe UI', Arial, sans-serif;
-              font-size:10pt; color:#000000; }}
-      td {{ padding-left:2px; }}
-      table {{ border-collapse:collapse; }}
-      img {{ image-rendering: -webkit-optimize-contrast; }}
-      page {{ display:block; width:21cm; height:29.7cm; background:white;
-              margin:0; padding:0; }}
+      {_INVOICE_PAGE_CSS}
     </style></head><body>
     <page size="A4">
-    <table width="816" height="1056" cellpadding="0" cellspacing="0"
-           style="font-family:calibri; margin-top:10px;" align="center">
+    <table class="invoice" width="790" height="1056" cellpadding="0"
+           cellspacing="0" style="font-family:calibri;">
       <col width="31" /><col width="201" /><col width="61" /><col width="87" />
       <col width="72" /><col width="77" /><col width="57" /><col width="73" />
 
       <tr height="13">
         <td height="13" colspan="8" style="{_TD}">
-          <img src="{sticker}" height="200px" width="870px"/></td>
+          <img class="sticker" src="{sticker}" alt="sticker"/></td>
       </tr>
 
       <tr height="26">
         <td colspan="8" height="24"
-            style="border:1px solid black;border-bottom:0px;font-size:20px;">
-          <div style="float: left">
-            <b>&nbsp; GSTIN:&nbsp; {_h(admin.get('gst'))} </b>
-            <strong style="font-size:24px; margin-left: 100px;">{title}</strong>
-            <b style="padding-left:120px;">&nbsp; IEC:&nbsp; {_h(admin.get('pan'))} </b>
-          </div></td>
+            style="border:1px solid black;border-bottom:0px;font-size:20px;
+                   padding:0;">
+          <!-- Three real columns instead of one float with hard-coded
+               pixel gaps: a longer title ("Proforma Invoice", "Purchase
+               Invoice") used to push the IEC value onto a second line,
+               because the gaps were fixed at 100px/120px regardless of how
+               wide the title actually was. Percentage widths let all three
+               stay on one line for every document type. -->
+          <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                 style="font-size:20px;">
+            <col width="34%" /><col width="32%" /><col width="34%" />
+            <tr>
+              <td style="border:none;padding:0 4px;"
+                  ><b>&nbsp; GSTIN:&nbsp; {_h(admin.get('gst'))}</b></td>
+              <td style="border:none;padding:0;text-align:center;"
+                  ><strong style="font-size:24px;">{title}</strong></td>
+              <td style="border:none;padding:0 4px;text-align:right;"
+                  ><b>IEC:&nbsp; {_h(admin.get('pan'))}</b></td>
+            </tr>
+          </table>
+        </td>
       </tr>
       <tr height="13">
         <td height="13" colspan="8" style="{_TD}">&nbsp;</td>
@@ -859,19 +930,11 @@ def build_purchase_invoice_html(master, items, admin=None, buyer=None):
 
     parts = []
     parts.append(f"""<html><head><meta charset="utf-8"><style>
-      @page {{ size: A4 portrait; margin: 0; }}
-      html, body {{ margin:0; padding:0; background:#ffffff; }}
-      body {{ font-family:calibri, 'Segoe UI', Arial, sans-serif;
-              font-size:10pt; color:#000000; }}
-      td {{ padding-left:2px; }}
-      table {{ border-collapse:collapse; }}
-      img {{ image-rendering: -webkit-optimize-contrast; }}
-      page {{ display:block; width:21cm; height:29.7cm; background:white;
-              margin:0; padding:0; }}
+      {_INVOICE_PAGE_CSS}
     </style></head><body>
     <page size="A4">
-    <table width="816" height="1056" cellpadding="0" cellspacing="0"
-           style="font-family:calibri; margin-top:10px;" align="center">
+    <table class="invoice" width="790" height="1056" cellpadding="0"
+           cellspacing="0" style="font-family:calibri;">
       <col width="31" /><col width="201" /><col width="61" /><col width="87" />
       <col width="72" /><col width="77" /><col width="57" /><col width="73" />
 
@@ -940,7 +1003,7 @@ def build_purchase_invoice_html(master, items, admin=None, buyer=None):
         <td colspan="5" style="{_R}"><b></b></td>
       </tr>
       <tr height="23">
-        <td colspan="3" height="23" style="{_LR}"><strong>&nbsp; {_h(company_gst)}</strong></td>
+        <td colspan="3" height="23" style="{_LR}"><strong>&nbsp; GSTIN/UIN: {_h(company_gst)}</strong></td>
         <td colspan="5" style="{_R}"></td>
       </tr>
       <tr height="13">
@@ -1904,7 +1967,14 @@ def _embed_sticker(html, doc):
 # --------------------------------------------------------------------------- #
 # Print helper
 # --------------------------------------------------------------------------- #
-def _print_web_page(page, printer, parent=None):
+def _print_web_page(view_or_page, printer, parent=None):
+    """Print a rendered WebEngine view/page to *printer*, blocking briefly.
+
+    Qt 6.11 quirk: ``print()`` lives on QWebEngineView, NOT on
+    QWebEnginePage (which only has ``printToPdf``).  So when handed a bare
+    page we look for an owning view first; ``page.print`` is NEVER called
+    (older builds crashed with AttributeError here).
+    """
     from PyQt6.QtCore import QEventLoop
     loop = QEventLoop()
     result = {"ok": False}
@@ -1913,8 +1983,62 @@ def _print_web_page(page, printer, parent=None):
         result["ok"] = bool(success)
         loop.quit()
 
-    page.print(printer, _done)
-    loop.exec()
+    target = view_or_page
+    view = None
+    try:
+        from PyQt6.QtWebEngineWidgets import QWebEngineView as _V
+        if isinstance(target, _V):
+            view = target
+        else:
+            view = getattr(target, "view", lambda: None)()
+            if not isinstance(view, _V):
+                for w in (getattr(target, "parent", lambda: None)(), parent):
+                    if isinstance(w, _V):
+                        view = w
+                        break
+    except Exception:
+        view = None
+
+    try:
+        if view is not None:
+            try:
+                # Qt 6.11: QWebEngineView.print(printer) - no callback arg
+                # (older Qt accepted print(printer, callback)).
+                import inspect as _inspect
+                try:
+                    _n = len(_inspect.signature(view.print).parameters)
+                except Exception:
+                    _n = 1
+                if _n >= 2:
+                    view.print(printer, _done)
+                else:
+                    view.print(printer)
+                    try:
+                        loop.quit()
+                    except Exception:
+                        pass
+            except TypeError:
+                # Fallback for single-arg signature
+                try:
+                    view.print(printer)
+                except Exception:
+                    traceback.print_exc()
+                try:
+                    loop.quit()
+                except Exception:
+                    pass
+        else:
+            loop.quit()
+    except Exception:
+        traceback.print_exc()
+        try:
+            loop.quit()
+        except Exception:
+            pass
+    try:
+        loop.exec()
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -2049,7 +2173,9 @@ def show_invoice_view(parent, doc, master, items, title="", cattype="",
             lambda path, ok: _msg(
                 "success" if ok else "error", dlg, "Save PDF",
                 f"Saved to:\n{path}" if ok else "Failed to save PDF."))
-        page.printToPdf(fname, QPageSize(QPageSize.PageSizeId.A4))
+        page.printToPdf(fname, QPageLayout(
+            QPageSize(QPageSize.PageSizeId.A4),
+            QPageLayout.Orientation.Portrait, QMarginsF()))
 
     def _print():
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
@@ -2060,7 +2186,7 @@ def show_invoice_view(parent, doc, master, items, title="", cattype="",
         preview.setWindowTitle("Print Preview")
         _brand(preview)                         # brand mark on the title bar
         preview.paintRequested.connect(
-            lambda pr: _print_web_page(view.page(), pr, preview))
+            lambda pr: _print_web_page(view, pr, preview))
         preview.exec()
 
     pdf_btn.clicked.connect(_save_pdf)
@@ -2083,7 +2209,203 @@ def show_invoice_view(parent, doc, master, items, title="", cattype="",
     dlg.destroyed.connect(_forget)
 
     dlg.show()
+    return dlg
+
+
+def print_invoice(parent, doc, master, items, cattype=""):
+    """Render the invoice HTML off-screen and open the print dialog directly.
+
+    Used by the Purchase-List one-click 'Print' row button - no preview
+    window is opened first. Uses QPrintDialog (not QPrintPreviewDialog) so
+    WebEngine's print() never fires while a preview printer is active
+    (that was the 'Cannot be changed while printer is active' warning).
+    Returns True when the print was sent, False otherwise.
+    """
+    if doc not in INVOICE_PRINT_DOCS:
+        return False
+
+    base_url = QUrl.fromLocalFile(_PYQT_BASE + os.sep).toString()
+    try:
+        html = _build_html_for_doc(doc, master, items,
+                                   cattype=cattype, base_url=base_url)
+    except Exception:
+        traceback.print_exc()
+        _msg("error", parent, "Error",
+             "Failed to build the document HTML.\nSee the terminal for details.")
+        return False
+    if html is None:
+        return False
+
+    if doc in ("tax", "proforma"):
+        html = _embed_sticker(html, doc)
+
+    from PyQt6.QtCore import QEventLoop
+    try:
+        from PyQt6.QtWebEngineCore import QWebEngineSettings
+        from PyQt6.QtWebEngineWidgets import QWebEngineView
+    except ImportError:
+        from PyQt6.QtWebEngineCore import QWebEngineSettings
+        from PyQt6.QtWebEngineWidgets import QWebEngineView
+    from PyQt6.QtPrintSupport import QPrintDialog
+
+    loaded = {"ok": False}
+    loop = QEventLoop()
+    # NOTE: QWebEnginePage has NO .print() on Qt 6.11 (only .printToPdf);
+    # .print() lives on QWebEngineView, so we render through a hidden view
+    # and keep it alive until printing finishes.
+    view = QWebEngineView(parent)
+    view.hide()
+    try:
+        view.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls,
+            True)
+        view.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls,
+            True)
+    except Exception:
+        pass
+
+    def _loaded(ok):
+        loaded["ok"] = bool(ok)
+        loop.quit()
+
+    view.loadFinished.connect(_loaded)
+    view.setHtml(html, baseUrl=QUrl.fromLocalFile(_PYQT_BASE + os.sep))
+    loop.exec()
+    if not loaded["ok"]:
+        try:
+            view.deleteLater()
+        except Exception:
+            pass
+        _msg("error", parent, "Print", "Failed to render the document.")
+        return False
+
+    # Fresh printer configured BEFORE any dialog touches it (setting layout
+    # while a preview printer is active caused the Qt warning).
+    printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    try:
+        printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        printer.setPageMargins(QMarginsF(8, 6, 8, 6),
+                               QPageLayout.Unit.Millimeter)
+    except Exception:
+        pass
+    invid = str(master.get("invid") or master.get("q_id") or "").strip()
+    dlg = QPrintDialog(printer, parent)
+    dlg.setWindowTitle(
+        f"Print {_PRINT_TITLE.get(doc, 'Document')}"
+        f"{(' ' + invid) if invid else ''}")
+    _brand(dlg)
+    if dlg.exec() != dlg.DialogCode.Accepted:
+        try:
+            view.deleteLater()
+        except Exception:
+            pass
+        return False
+    # QWebEngineView.print(printer) - single-arg form on Qt 6.11.
+    try:
+        view.print(printer)
+    except Exception:
+        traceback.print_exc()
+        try:
+            view.deleteLater()
+        except Exception:
+            pass
+        return False
+    try:
+        view.deleteLater()
+    except Exception:
+        pass
     return True
+
+
+def save_invoice_pdf(parent, doc, master, items, cattype="", title="",
+                     suggested_name=""):
+    """Render the invoice HTML off-screen and save it straight to a PDF file.
+
+    Used by the Purchase-List 'Download PDF' (Drive) button so the user gets
+    a Save-As dialog and a PDF file without opening the preview window.
+    Returns True on success, False on failure, None when cancelled.
+    """
+    if doc not in INVOICE_PRINT_DOCS:
+        return False
+
+    base_url = QUrl.fromLocalFile(_PYQT_BASE + os.sep).toString()
+    try:
+        html = _build_html_for_doc(doc, master, items,
+                                   cattype=cattype, base_url=base_url)
+    except Exception:
+        traceback.print_exc()
+        return False
+    if html is None:
+        return False
+
+    if doc in ("tax", "proforma"):
+        html = _embed_sticker(html, doc)
+
+    invid = str(master.get("invid") or master.get("q_id") or "").strip()
+    safe = "".join(c if (c.isalnum() or c in ("-", "_")) else "_"
+                   for c in (suggested_name or invid or doc)).strip("_")
+    default = os.path.join(os.path.expanduser("~"), f"{safe or doc}.pdf")
+    fname, _ = QFileDialog.getSaveFileName(
+        parent, title or "Download PDF", default, "PDF Files (*.pdf)")
+    if not fname:
+        return None
+    if not fname.lower().endswith(".pdf"):
+        fname += ".pdf"
+
+    from PyQt6.QtCore import QEventLoop
+    try:
+        # PyQt6 moved QWebEnginePage to QtWebEngineCore (QtWebEngineWidgets
+        # only holds QWebEngineView) - import from the right place.
+        from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
+    except ImportError:
+        from PyQt6.QtWebEngineWidgets import QWebEnginePage  # Qt < 6.4 fallback
+        from PyQt6.QtWebEngineCore import QWebEngineSettings
+
+    result = {"ok": False}
+    loop = QEventLoop()
+    page = QWebEnginePage(parent)
+    try:
+        page.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls,
+            True)
+        page.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls,
+            True)
+    except Exception:
+        pass
+
+    def _loaded(ok):
+        if not ok:
+            loop.quit()
+            return
+        try:
+            page.pdfPrintingFinished.connect(_printed)
+        except Exception:
+            pass
+        try:
+            page.printToPdf(fname, QPageLayout(
+                QPageSize(QPageSize.PageSizeId.A4),
+                QPageLayout.Orientation.Portrait, QMarginsF()))
+        except Exception:
+            traceback.print_exc()
+            loop.quit()
+
+    def _printed(_path, ok):
+        result["ok"] = bool(ok)
+        loop.quit()
+
+    page.loadFinished.connect(_loaded)
+    page.setHtml(html, baseUrl=QUrl.fromLocalFile(_PYQT_BASE + os.sep))
+    loop.exec()
+    try:
+        page.deleteLater()
+    except Exception:
+        pass
+    if result["ok"]:
+        _msg("success", parent, "Download PDF", f"Saved to:\n{fname}")
+        return True
+    return False
 
 
 def show_quick_quotation_preview(parent, master, items=None, cattype="",
@@ -2107,7 +2429,7 @@ def show_print_preview(parent, doc, master, items, cattype="", debug=False):
     doc_html.setHtml(build_invoice_html(doc, master, items))
 
     def render(printer_):
-        doc_html.print_(printer_)
+        doc_html.print(printer_)
 
     preview.paintRequested.connect(render)
     preview.exec()
@@ -2184,7 +2506,7 @@ def show_ledger_print_preview(parent, client_name, fy, data):
     doc_html.setHtml(html)
 
     def render(printer_):
-        doc_html.print_(printer_)
+        doc_html.print(printer_)
 
     preview.paintRequested.connect(render)
     preview.exec()

@@ -34,10 +34,10 @@ PAGE proforma_report OK
 PAGE sales_prediction OK
 PAGE settings OK
 FAILED COUNT: 0
-DASHBOARD REFRESH: OK, info-box values = ['1084', '19', '158', '2161', '3', '1287', '380', '₹ 3,00,46,926.00']
+DASHBOARD REFRESH: OK, info-box values = ['23', '5', '143', '5', '3', '11', '3', '₹ 9,500.00']
 DASHBOARD INFOBOXES ALIVE: OK
 DASHBOARD SECOND REFRESH: OK
-CLIENTS: 1086 records, page shows 10 rows, first Sr No = 1, pages = 109
+CLIENTS: 35 records, page shows 10 rows, first Sr No = 1, pages = 4
 CLICK PAGE 2 -> shows 10 rows, first Sr No = 11, active page = 2
 CLICK PAGE 2 CHANGES DATA: OK
 CLICK PAGE 3 -> first Sr No = 21, active page = 3
@@ -47,12 +47,12 @@ CLICK PAGE 1 CHANGES DATA: OK
 NEXT BUTTON: OK (page 2, first Sr No = 11)
 PREV BUTTON: OK (page 1)
 PER-PAGE=20 rows shown: 20
-LAST BUTTON -> page 55 of 55, rows = 6
-INFO client #1174: 1 invoice rows, table 2 visible, summary = '#1174  |  1 invoice(s)  |  Total ₹ 2,06,500.00'
+LAST BUTTON -> page 2 of 2, rows = 15
+INFO client #51: 0 invoice rows, table 1 visible, summary = '#51  |  0 invoice(s)  |  Total ₹ 0.00'
 INFO client TABLES: OK
-INFO supplier #1078: 1 invoice rows, table 2 visible, summary = '#1078  |  1 invoice(s)  |  Total ₹ 7,301.00'
+INFO supplier #54: 0 invoice rows, table 1 visible, summary = '#54  |  0 invoice(s)  |  Total ₹ 0.00'
 INFO supplier TABLES: OK
-INFO product #176: 1 invoice rows, table 2 visible, summary = 'Cartridge Inserting PCB  |  1 item(s) sold  |  Created 2026-02-27'
+INFO product #161: 0 invoice rows, table 1 visible, summary = 'Porter Delivery  |  0 item(s) sold  |  Created 2024-09-21'
 INFO product TABLES: OK
 INFO PAGES: OK
 SMOKE TEST DONE

@@ -191,35 +191,41 @@ class DTFooter(QWidget):
 
 
 # --------------------------------------------------------------------------- #
-# Column-toggle strip (bottom-RIGHT, black buttons)
+# Column-toggle strip (bottom-LEFT, blue buttons - matches Ledger page)
 # --------------------------------------------------------------------------- #
 class ColumnToggleStrip(QWidget):
+    """Row of checkable buttons that show/hide each table column.
+
+    Colours match the Ledger page strip: blue while the column is visible,
+    red once it is toggled off.
+    """
+
     def __init__(self, parent, headers, table):
         super().__init__(parent)
         self._table = table
         h = QHBoxLayout(self)
         h.setContentsMargins(0, 8, 0, 0)
         h.setSpacing(4)
-        h.addStretch()
 
         for i, label in enumerate(headers):
             b = QPushButton(label)
             b.setFixedHeight(26)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet(
-                "QPushButton { background:#222222; color:#ffffff;"
-                " border:1px solid #000000; border-radius:3px;"
+                "QPushButton { background:#3c8dbc; color:#ffffff;"
+                " border:1px solid #367fa9; border-radius:3px;"
                 " padding:2px 10px; font-size:11.5px; }"
-                "QPushButton:hover { background:#3a3a3a; }"
-                "QPushButton:checked { background:#000000;"
-                " border-color:#000000; color:#ffffff; }"
-                "QPushButton:!checked { background:#888888;"
-                " border-color:#555555; }")
+                "QPushButton:hover { background:#367fa9; }"
+                "QPushButton:!checked { background:#dd4b39;"
+                " border-color:#c23321; }")
             b.setCheckable(True)
             b.setChecked(True)
             b.toggled.connect(
                 lambda on, col=i: table.setColumnHidden(col, not on))
             h.addWidget(b)
+
+        # trailing stretch pins the strip to the bottom-LEFT corner
+        h.addStretch()
 
 
 # --------------------------------------------------------------------------- #
@@ -378,7 +384,7 @@ def _generic_export(parent, kind, rows, columns, filename_stub,
         dlg = QPrintPreviewDialog(printer, parent)
         dlg.setWindowTitle("Print")
         W.apply(dlg)                       # brand mark on the title bar
-        dlg.paintRequested.connect(lambda p: doc.print_(p))
+        dlg.paintRequested.connect(lambda p: doc.print(p))
         dlg.exec()
         return
 
@@ -491,7 +497,7 @@ def _generic_export(parent, kind, rows, columns, filename_stub,
         printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
         printer.setPageMargins(QMarginsF(10, 10, 10, 10),
                                QPageLayout.Unit.Millimeter)
-        doc.print_(printer)
+        doc.print(printer)
         W.info(parent, f"Saved to {fname}")
 
     elif kind == "png":
@@ -634,7 +640,7 @@ class ClientMasterPage(QWidget):
         self.footer = DTFooter(self, on_goto=self._goto_page)
         body.addWidget(self.footer)
 
-        # ---- column-toggle strip (bottom-right) ----
+        # ---- column-toggle strip (bottom-left) ----
         self.col_toggles = ColumnToggleStrip(self, self.HEADERS, self.table)
         body.addWidget(self.col_toggles)
 
@@ -728,9 +734,9 @@ class ClientMasterPage(QWidget):
             ut = int(ut)
         except (TypeError, ValueError):
             return str(ut) if ut not in (None, "") else ""
-        return {0: "Client",
-                1: "Supplier",
-                2: "Dual(Cust/Sup)"}.get(ut, "")
+        # Same source of truth as the dialog combo (UTYPE_OPTIONS).
+        labels = dict(self.UTYPE_OPTIONS)
+        return labels.get(ut, "")
 
     def _add_action_buttons(self, row, record):
         # Edit
@@ -787,19 +793,105 @@ class ClientMasterPage(QWidget):
             ("Country", "country", "text", None),
             ("GST No", "gst", "text", None),
             ("Email", "email", "text", None),
-            ("Client Type", "c_type", "combo", self.types_cache),
+            ("Client Type", "c_type", "combo", self.type_name_options()),
+            # Mirrors the "User Type" <select> in the CodeIgniter
+            # manage-clients / manage-suppliers modals (add AND edit):
+            #   0 = Client, 1 = Supplier, 2 = Dual(Cust/Sup)
+            # Same labels and same codes, so the stored u_type is identical
+            # to what the web app writes.
+            ("User Type", "u_type", "combo", self.UTYPE_OPTIONS),
         ]
 
+    # User-Type choices for the add/edit dialog. Kept in one place so the
+    # combo and _utype_label() can never drift apart.
+    UTYPE_OPTIONS = [(0, "Client"),
+                     (1, "Supplier"),
+                     (2, "Dual(Cust/Sup)")]
+
+    def type_name_options(self):
+        """[(name, name)] for the Bill/Client-Type combo.
+
+        client.c_type is a varchar(4) that stores the TYPE NAME ('IGST',
+        'Loc') - exactly what the CodeIgniter form posts
+        (<option value="IGST">IGST</option>) - NOT clienttype.id.
+
+        The combo therefore has to use the name as BOTH the label and the
+        data. Feeding it the ids instead meant the row's stored name never
+        matched, and FormDialog's "unknown value" fallback appended it as an
+        extra row, so every Edit dialog listed e.g. IGST / Loc / Loc.
+        Names are de-duplicated case-insensitively so a dirty clienttype table
+        cannot reintroduce the same duplicate.
+        """
+        out, seen = [], set()
+        for _tid, tname in self.types_cache:
+            t = str(tname).strip()
+            if t and t.lower() not in seen:
+                seen.add(t.lower())
+                out.append((t, t))
+        return out
+
+    def _ctype_name(self, row=None):
+        """Normalise a row's c_type to the stored type NAME.
+
+        Accepts the name (normal case) and also an id, which is what an older
+        build of this app wrote into that varchar column; both resolve to the
+        proper name so editing such a row repairs it instead of duplicating.
+        """
+        val = (row or {}).get("c_type")
+        if val in (None, ""):
+            opts = self.type_name_options()
+            return opts[0][0] if opts else ""
+        s = str(val).strip()
+        for _tid, tname in self.types_cache:
+            if s.lower() == str(tname).strip().lower():
+                return str(tname).strip()
+        try:
+            n = int(s)
+        except (TypeError, ValueError):
+            return s
+        for tid, tname in self.types_cache:
+            try:
+                if int(tid) == n:
+                    return str(tname).strip()
+            except (TypeError, ValueError):
+                continue
+        return s
+
+    def _utype_value(self, row=None):
+        """Normalised u_type (int) for the dialog.
+
+        A row can carry NULL/blank u_type on legacy data, in which case we
+        fall back to the page's own type (0 = Clients page, 1 = Suppliers
+        page) - the same fallback _utype_label() uses when rendering.
+        Without this the combo would silently show "Client" (index 0) for a
+        legacy supplier and an edit would rewrite its type.
+        """
+        val = (row or {}).get("u_type")
+        if val in (None, ""):
+            return self.u_type
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return self.u_type
+
     def _add(self):
+        type_opts = self.type_name_options()
         dlg = W.FormDialog(self, "Add New Client", self._specs(),
-                           values={"c_type": self.types_cache[0][0]
-                                   if self.types_cache else 0})
+                           values={"c_type": type_opts[0][0]
+                                   if type_opts else "",
+                                   # Default to this page's own type
+                                   # (Client page -> Client, Suppliers page ->
+                                   # Supplier), matching the web app's
+                                   # Manage-Clients / Manage-Suppliers split.
+                                   "u_type": self.u_type})
         if dlg.exec():
             data = dlg.get()
             if not data["c_name"] or not data["mob"]:
                 W.error(self, "Name and Mobile are required.")
                 return
-            data["u_type"] = self.u_type
+            # User Type now comes from the dialog instead of being forced.
+            if data.get("u_type") is None:
+                data["u_type"] = self.u_type
             data["created"] = date.today()
             try:
                 db_manager.insert_client(data)
@@ -810,14 +902,25 @@ class ClientMasterPage(QWidget):
             self.refresh()
 
     def _edit(self, r):
+        values = dict(r)
+        # Normalise so the combo selects the row's real type even for
+        # NULL/legacy values.
+        values["u_type"] = self._utype_value(r)
+        # c_type is stored as the type NAME; feed the combo that exact value
+        # so findData() hits an existing entry instead of appending a
+        # duplicate one.
+        values["c_type"] = self._ctype_name(r)
         dlg = W.FormDialog(self, f"Edit Client #{r['cid']}", self._specs(),
-                           values=r)
+                           values=values)
         if dlg.exec():
             data = dlg.get()
             if not data["c_name"] or not data["mob"]:
                 W.error(self, "Name and Mobile are required.")
                 return
-            data["u_type"] = r["u_type"]
+            # Honour the User Type chosen in the dialog; keep the previous
+            # value only when the combo somehow yields nothing.
+            if data.get("u_type") is None:
+                data["u_type"] = self._utype_value(r)
             try:
                 db_manager.update_client(r["cid"], data)
             except Exception as exc:
@@ -927,7 +1030,7 @@ class ProductsPage(QWidget):
         self.footer = DTFooter(self, on_goto=self._goto_page)
         body.addWidget(self.footer)
 
-        # ---- column toggles (bottom-right) ----
+        # ---- column toggles (bottom-left) ----
         self.col_toggles = ColumnToggleStrip(self, self.HEADERS, self.table)
         body.addWidget(self.col_toggles)
 

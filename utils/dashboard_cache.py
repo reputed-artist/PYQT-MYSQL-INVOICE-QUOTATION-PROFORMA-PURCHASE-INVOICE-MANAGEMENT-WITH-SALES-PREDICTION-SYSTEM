@@ -1,158 +1,223 @@
 """
-Cached wrappers around every db_manager call the dashboard uses.
+dashboard_cache.py
 
-The dashboard makes ~12 DB calls per load. With 1000+ clients and hundreds
-of invoices, this is slow. This module caches each result for a TTL that
-matches its volatility:
+Thread-safe in-memory cache for dashboard queries.
 
-    - dashboard_stats           ->  5 min  (KPIs, changes on any save)
-    - current_month_stats       ->  5 min
-    - monthly_sales             -> 10 min  (per year, keyed)
-    - fy_main_chart             ->  5 min  (per FY, keyed)
-    - fy_sales_chart            ->  5 min  (per FY, keyed)
-    - annual_turnover           -> 10 min
-    - location_tree             -> 10 min
-    - donut_*                   -> 10 min  (per FY where relevant)
-    - top_products_sold         ->  5 min  (per FY, keyed)
-    - client_reminder           ->  2 min  (changes as proformas come in)
-    - quickquote_reminder       ->  2 min
-    - recent_invoices           ->  2 min  (per doc, keyed)
-    - recent_reports            ->  not cached (runs on demand)
-
-Any write to a document (invoice / proforma / quote / purchase / payment)
-should call `invalidate_dashboard()` to force a refresh on next load.
+Public API
+----------
+cached(key, ttl, loader, default=..., on_error=None) -> value
+get(key, default=None) -> value
+set(key, value, ttl=TTL_CHART) -> None
+invalidate(prefix="") -> None
+warm_many(tasks, progress=None) -> None
+fill_all(year, fy_start, fy_end, progress=None) -> None
+stats() -> dict
 """
-from database import db_manager
-from utils.cache import cache
+from __future__ import annotations
+
+import threading
+import time
+from typing import Any, Callable, Iterable, Optional, Tuple
+
+# --------------------------------------------------------------------- #
+# TTL buckets
+# --------------------------------------------------------------------- #
+TTL_KPI:   float = 20.0
+TTL_CHART: float = 60.0
+TTL_FAST:  float = 20.0
+
+_LOCK = threading.RLock()
+_STORE: dict[str, Tuple[float, Any]] = {}
 
 
-# --------------------------------------------------------------------- TTLs
-TTL_KPI = 300            #  5 min
-TTL_CHART = 600          # 10 min
-TTL_FAST = 120           #  2 min
+# --------------------------------------------------------------------- #
+# Core API
+# --------------------------------------------------------------------- #
+def _fresh(entry: Optional[Tuple[float, Any]]) -> bool:
+    return entry is not None and entry[0] > time.time()
 
 
-# ------------------------------------------------------------------- getters
-def get_dashboard_stats():
-    return cache.get("dash.stats")
+def get(key: str, default: Any = None) -> Any:
+    with _LOCK:
+        entry = _STORE.get(key)
+        if _fresh(entry):
+            return entry[1]
+    return default
 
 
-def get_current_month_stats():
-    return cache.get("dash.month")
+def set(key: str, value: Any, ttl: float = TTL_CHART) -> None:
+    with _LOCK:
+        _STORE[key] = (time.time() + float(ttl), value)
 
 
-def get_monthly_sales(year):
-    return cache.get(f"dash.monthly_sales::{year}")
+def invalidate(prefix: str = "") -> None:
+    with _LOCK:
+        if not prefix:
+            _STORE.clear()
+            return
+        for k in [k for k in _STORE if k.startswith(prefix)]:
+            _STORE.pop(k, None)
 
 
-def get_fy_main_chart(sy, ey):
-    return cache.get(f"dash.fy_main::{sy}-{ey}")
+def cached(key: str,
+           ttl: float,
+           loader: Callable[[], Any],
+           default: Any = None,
+           on_error: Optional[Callable[[Exception], None]] = None) -> Any:
+    with _LOCK:
+        entry = _STORE.get(key)
+        if _fresh(entry):
+            return entry[1]
+
+    try:
+        value = loader()
+    except Exception as exc:
+        if on_error is not None:
+            try:
+                on_error(exc)
+            except Exception:
+                pass
+        return default
+
+    with _LOCK:
+        _STORE[key] = (time.time() + float(ttl), value)
+    return value
 
 
-def get_fy_sales_chart(sy, ey):
-    return cache.get(f"dash.fy_sales::{sy}-{ey}")
-
-
-def get_annual_turnover():
-    return cache.get("dash.annual")
-
-
-def get_location_tree():
-    return cache.get("dash.locations")
-
-
-def get_donut(key, sy=None, ey=None):
-    k = f"dash.donut.{key}"
-    if sy is not None and ey is not None:
-        k += f"::{sy}-{ey}"
-    return cache.get(k)
-
-
-def get_top_products(sy, ey):
-    return cache.get(f"dash.top_products::{sy}-{ey}")
-
-
-def get_client_reminder():
-    return cache.get("dash.reminder.clients")
-
-
-def get_quickquote_reminder():
-    return cache.get("dash.reminder.quickquote")
-
-
-def get_recent_invoices(doc, limit=8):
-    return cache.get(f"dash.recent::{doc}::{limit}")
-
-
-# ------------------------------------------------------------------- fillers
-def fill_all(year, sy, ey):
-    """Run every dashboard query once and cache the results.
-
-    Called by the dashboard page when the cache is cold or after a manual
-    refresh. Any exception in an individual call is swallowed and stored
-    as an empty value, so a single broken query doesn't blank the page.
-    """
-    def safe(fn, default):
+# --------------------------------------------------------------------- #
+# Warm-up (used by prefetch thread)
+# --------------------------------------------------------------------- #
+def warm_many(
+    tasks: Iterable[Tuple[str, float, Callable[[], Any]]],
+    progress: Optional[Callable[[int, int, str], None]] = None,
+) -> None:
+    tasks = list(tasks)
+    total = len(tasks)
+    for i, (key, ttl, loader) in enumerate(tasks, 1):
         try:
-            return fn()
+            value = loader()
         except Exception:
-            return default
-
-    cache.set("dash.stats", safe(db_manager.dashboard_stats, {}),
-              ttl=TTL_KPI)
-    cache.set("dash.month", safe(db_manager.current_month_stats, {}),
-              ttl=TTL_KPI)
-    cache.set(f"dash.monthly_sales::{year}",
-              safe(lambda: db_manager.monthly_sales("invtest2", "created",
-                                                    year), [0] * 12),
-              ttl=TTL_CHART)
-    cache.set(f"dash.fy_main::{sy}-{ey}",
-              safe(lambda: db_manager.fy_invoice_stats(sy, ey), {}),
-              ttl=TTL_KPI)
-    cache.set(f"dash.fy_sales::{sy}-{ey}",
-              safe(lambda: db_manager.fy_sales_chart(sy, ey), []),
-              ttl=TTL_CHART)
-    cache.set("dash.annual",
-              safe(db_manager.annual_turnover_chart, []),
-              ttl=TTL_CHART)
-    cache.set("dash.locations",
-              safe(db_manager.location_tree, []),
-              ttl=TTL_CHART)
-    cache.set(f"dash.top_products::{sy}-{ey}",
-              safe(lambda: db_manager.top_products_sold(sy, ey), []),
-              ttl=TTL_KPI)
-    cache.set("dash.reminder.clients",
-              safe(db_manager.client_reminder, []),
-              ttl=TTL_FAST)
-    cache.set("dash.reminder.quickquote",
-              safe(db_manager.quickquote_reminder, []),
-              ttl=TTL_FAST)
-    cache.set("dash.recent::tax::8",
-              safe(lambda: db_manager.recent_invoices("tax", 8), []),
-              ttl=TTL_FAST)
-
-    # Donuts — keyed by FY where applicable
-    donuts = {
-        "consumables":      lambda: db_manager.donut_consumables(sy, ey),
-        "client_type":      db_manager.donut_user_category,
-        "country":          db_manager.donut_client_country,
-        "product_category": lambda: db_manager.donut_product_category(sy, ey),
-        "billed":           db_manager.donut_billed_clients,
-        "docs":             lambda: db_manager.donut_doc_count(sy, ey),
-        "client_type2":     db_manager.donut_client_type,
-    }
-    for key, fn in donuts.items():
-        k = f"dash.donut.{key}"
-        if key in ("consumables", "product_category", "docs"):
-            k += f"::{sy}-{ey}"
-        cache.set(k, safe(fn, []), ttl=TTL_CHART)
+            value = None
+        with _LOCK:
+            _STORE[key] = (time.time() + float(ttl), value)
+        if progress is not None:
+            try:
+                progress(i, total, key)
+            except Exception:
+                pass
 
 
-# ---------------------------------------------------------------- invalidation
-def invalidate_dashboard():
-    """Call this after any save/delete that affects dashboard numbers.
-
-    Invoices, proformas, quotes, purchases, payments, clients, products,
-    accounts — anything that could change a KPI or chart.
+# --------------------------------------------------------------------- #
+# fill_all — the ONE function main.py's prefetch thread calls
+# --------------------------------------------------------------------- #
+def fill_all(
+    year: int,
+    fy_start: int,
+    fy_end: int,
+    progress: Optional[Callable[[int, int, str], None]] = None,
+) -> None:
     """
-    cache.invalidate_all()
+    Warm every key DashboardPage.refresh() reads.
+
+    Parameters
+    ----------
+    year      : calendar year used by the Monthly Recap Report combo
+    fy_start  : start year of the currently-selected financial year
+    fy_end    : end year of the same FY (= fy_start + 1)
+    progress  : optional callback(done, total, key) after each query
+    """
+    from database import db_manager  # local import to avoid cycles
+
+    # Ensure dashboard indexes exist BEFORE any query. This DDL can take
+    # seconds on a cold DB, so it MUST run on the worker thread.
+    try:
+        db_manager.ensure_dashboard_indexes()
+    except Exception:
+        pass
+
+    tasks: list[Tuple[str, float, Callable[[], Any]]] = []
+
+    # ---- KPIs ----
+    tasks.append(("dash.stats", TTL_KPI, db_manager.dashboard_stats))
+    tasks.append(("dash.month", TTL_KPI, db_manager.current_month_stats))
+
+    # ---- Monthly sales for the current year ----
+    tasks.append((
+        f"dash.monthly_sales::{year}",
+        TTL_CHART,
+        lambda y=year: db_manager.monthly_sales("invtest2", "created", y),
+    ))
+
+    # ---- Recent invoices / reminders ----
+    tasks.append((
+        "dash.recent::tax::8",
+        TTL_FAST,
+        lambda: db_manager.recent_invoices("tax", 8),
+    ))
+    tasks.append((
+        "dash.reminder.clients",
+        TTL_FAST,
+        db_manager.client_reminder,
+    ))
+    tasks.append((
+        "dash.reminder.quickquote",
+        TTL_FAST,
+        db_manager.quickquote_reminder,
+    ))
+
+    # ---- Donuts (non-FY-scoped) ----
+    tasks.append((
+        "dash.donut.client_type",
+        TTL_CHART,
+        db_manager.donut_user_category,
+    ))
+    tasks.append((
+        "dash.donut.country",
+        TTL_CHART,
+        db_manager.donut_client_country,
+    ))
+    tasks.append((
+        "dash.donut.billed",
+        TTL_CHART,
+        db_manager.donut_billed_clients,
+    ))
+    tasks.append((
+        "dash.donut.client_type2",
+        TTL_CHART,
+        db_manager.donut_client_type,
+    ))
+
+    # ---- Donuts (FY-scoped) ----
+    tasks.append((
+        f"dash.donut.consumables::{fy_start}-{fy_end}",
+        TTL_CHART,
+        lambda s=fy_start, e=fy_end: db_manager.donut_consumables(s, e),
+    ))
+    tasks.append((
+        f"dash.donut.product_category::{fy_start}-{fy_end}",
+        TTL_CHART,
+        lambda s=fy_start, e=fy_end: db_manager.donut_product_category(s, e),
+    ))
+    tasks.append((
+        f"dash.donut.docs::{fy_start}-{fy_end}",
+        TTL_CHART,
+        lambda s=fy_start, e=fy_end: db_manager.donut_doc_count(s, e),
+    ))
+
+    # ---- FY bar chart ----
+    tasks.append((
+        f"dash.fy_sales::{fy_start}-{fy_end}",
+        TTL_CHART,
+        lambda s=fy_start, e=fy_end: db_manager.fy_sales_chart(s, e),
+    ))
+
+    warm_many(tasks, progress=progress)
+
+
+# --------------------------------------------------------------------- #
+# Diagnostic
+# --------------------------------------------------------------------- #
+def stats() -> dict:
+    with _LOCK:
+        return {k: (v[1] if _fresh(v) else "<stale>")
+                for k, v in _STORE.items()}

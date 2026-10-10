@@ -361,6 +361,11 @@ class MainWindow(QMainWindow):
         self.admin = admin
         self.setWindowTitle(f"{APP_TITLE} - Dashboard")
         self.setWindowIcon(app_icon())
+        # Default (restored) size only - main.py opens the window maximized so
+        # the dashboard always fills the screen. The minimum keeps the header,
+        # sidebar and content columns from collapsing if the user un-maximizes
+        # it and drags a corner; the window stays freely resizable either way.
+        self.setMinimumSize(1024, 640)
         self.resize(1360, 800)
         self._pages = {}
         self._nav_items = []
@@ -597,7 +602,7 @@ class MainWindow(QMainWindow):
         ("Quotation List", "quote_list", "list", None),
         ("Whatsapp", "whatsapp", "whatsapp", None),
 
-        ("Facebook Scraper", "facebook_scraper", "whatsapp", None),
+        ("Facebook Scraper", "facebook_scraper", "facebook", None),
         ("Manage Invoice", None, "folderopen", [
             ("Proforma Invoice List", "proforma_list", "file"),
             ("Tax Invoice List", "tax_list", "file"),

@@ -9,10 +9,15 @@ UI FIXES:
   never shows the window grey through it.
 - Every chart has a matching white card with border.
 - Donut charts are wrapped in titled white cards.
+
+PREFETCH FIX:
+- refresh() now reads ONLY from cache. Cold keys are fetched on a
+  background QThread and applied via a QTimer callback once ready, so the
+  dashboard never blocks the UI thread on SQL.
 """
 from datetime import date
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
                              QFrame, QLabel, QComboBox, QScrollArea,
@@ -36,7 +41,6 @@ _CHART_BORDER = "#d2d6de"
 
 
 def _chart_frame_style():
-    """Common stylesheet for every chart / chart-wrapper frame."""
     return (
         "QFrame { background: #ffffff;"
         " border: 1px solid %s;"
@@ -45,12 +49,10 @@ def _chart_frame_style():
 
 
 def _fill_white(painter, widget):
-    """Paint a solid white background covering the widget's rect."""
     painter.fillRect(widget.rect(), _CHART_WHITE)
 
 
 def _fmt_axis(v):
-    """Compact axis label: 1200 -> 1.2k, 1500000 -> 1.5M."""
     try:
         v = float(v)
     except (TypeError, ValueError):
@@ -64,12 +66,34 @@ def _fmt_axis(v):
 
 
 # =========================================================================== #
+# Async fetcher (new) — runs one loader on a QThread and emits the result
+# =========================================================================== #
+class _AsyncFetcher(QObject):
+    done = pyqtSignal(object)
+
+    def __init__(self, loader, key=None, ttl=None):
+        super().__init__()
+        self._loader = loader
+        self._key = key
+        self._ttl = ttl
+
+    def run(self):
+        try:
+            value = self._loader()
+        except Exception:
+            value = None
+        if self._key is not None and self._ttl is not None:
+            try:
+                dashboard_cache.set(self._key, value, self._ttl)
+            except Exception:
+                pass
+        self.done.emit(value)
+
+
+# =========================================================================== #
 # AdminLTE info-box
 # =========================================================================== #
 class InfoBox(QFrame):
-    """AdminLTE '.info-box': white card, colored icon square on the left,
-    small grey text + big bold number on the right."""
-
     def __init__(self, icon_name, text, color, parent=None):
         super().__init__(parent)
         self.setStyleSheet(
@@ -153,7 +177,7 @@ class GoalBar(QWidget):
 
 
 # =========================================================================== #
-# Recap box (AdminLTE ".box")
+# Recap box
 # =========================================================================== #
 class RecapBox(QFrame):
     def __init__(self, title, parent=None):
@@ -186,15 +210,9 @@ class RecapBox(QFrame):
 
 
 # =========================================================================== #
-# Monthly Bar chart  (BarChart)
+# Monthly Bar chart
 # =========================================================================== #
 class BarChart(QFrame):
-    """Canvas-style bar chart with x/y axes + hover tooltips.
-
-    UI FIX: paints its own white background so the parent's grey window
-    background never bleeds through.
-    """
-
     def __init__(self, values, color="#3c8dbc", parent=None):
         super().__init__(parent)
         self.values = list(values) if values else []
@@ -204,7 +222,6 @@ class BarChart(QFrame):
         self._bar_rects = []
         self._hover_idx = -1
         self.setToolTip("")
-        # white background + subtle border, consistent with other cards
         self.setStyleSheet(_chart_frame_style())
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
@@ -214,20 +231,13 @@ class BarChart(QFrame):
         self.setToolTip("")
         self.update()
 
-    # ------------------------------------------------------------ painting
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        # ---- FIX: paint our own white background first ----
         _fill_white(p, self)
 
         w, h = self.width(), self.height()
-
-        left   = 56
-        right  = 20
-        top    = 14
-        bottom = 34
+        left, right, top, bottom = 56, 20, 14, 34
 
         plot_l = left
         plot_r = max(left + 10, w - right)
@@ -236,7 +246,6 @@ class BarChart(QFrame):
         avail_w = plot_r - plot_l
         avail_h = plot_b - plot_t
 
-        # ---- grid + y-axis tick labels ----
         vmax = max(self.values) if self.values else 1
         vmax = vmax or 1
         f = p.font()
@@ -257,7 +266,6 @@ class BarChart(QFrame):
             lw = fm.horizontalAdvance(label)
             p.drawText(plot_l - lw - 6, int(y) + 4, label)
 
-        # ---- bars (clipped) ----
         self._bar_rects = []
         if self.values:
             n = len(self.values)
@@ -281,21 +289,17 @@ class BarChart(QFrame):
                 self._bar_rects.append((x, y, bar_w, bh, MONTHS[i], v))
             p.restore()
 
-            # ---- month labels ----
             p.setPen(QColor("#777"))
             for i in range(n):
                 label_rect = (int(plot_l + i * bw), plot_b + 4,
                               int(bw), bottom - 6)
                 p.drawText(*label_rect, Qt.AlignmentFlag.AlignCenter, MONTHS[i])
 
-        # ---- axis lines ----
         p.setPen(QPen(QColor("#cccccc")))
         p.drawLine(plot_l, plot_t, plot_l, plot_b)
         p.drawLine(plot_l, plot_b, plot_r, plot_b)
-
         p.end()
 
-    # ------------------------------------------------------------ hover
     def mouseMoveEvent(self, event):
         x = event.position().x()
         idx = -1
@@ -355,17 +359,10 @@ class SmallBox(QFrame):
 # Donut chart
 # =========================================================================== #
 class DonutChart(QFrame):
-    """Morris.Donut replacement: pie drawn with QPainter + centered legend.
-
-    UI FIX: paints its own white background so the parent's grey window
-    background never bleeds through.
-    """
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.slices = []
         self.setMinimumHeight(160)
-        # white background + subtle border, consistent with other cards
         self.setStyleSheet(_chart_frame_style())
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
@@ -376,8 +373,6 @@ class DonutChart(QFrame):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        # ---- FIX: paint our own white background first ----
         _fill_white(p, self)
 
         w, h = self.width(), self.height()
@@ -427,13 +422,6 @@ class DonutChart(QFrame):
 # FY bar chart
 # =========================================================================== #
 class FYBarChart(QFrame):
-    """Morris.Bar replacement with x/y axes, hover tooltips, clipping-safe
-    layout.
-
-    UI FIX: paints its own white background so the parent's grey window
-    background never bleeds through.
-    """
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.rows = []
@@ -446,7 +434,6 @@ class FYBarChart(QFrame):
         self._group_rects = []
         self._hover_idx = -1
         self.setToolTip("")
-        # white background + subtle border, consistent with other cards
         self.setStyleSheet(_chart_frame_style())
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
@@ -457,12 +444,9 @@ class FYBarChart(QFrame):
         self.setToolTip("")
         self.update()
 
-    # ------------------------------------------------------------ painting
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        # ---- FIX: paint our own white background first ----
         _fill_white(p, self)
 
         w, h = self.width(), self.height()
@@ -481,12 +465,10 @@ class FYBarChart(QFrame):
         avail_w = plot_r - plot_l
         avail_h = plot_b - plot_t
 
-        # ---- title ----
         if self.title:
             p.setPen(QColor("#555"))
             p.drawText(0, 4, w, 16, Qt.AlignmentFlag.AlignCenter, self.title)
 
-        # ---- legend ----
         lx = plot_l
         for i, lab in enumerate(self.labels):
             p.setPen(Qt.PenStyle.NoPen)
@@ -497,9 +479,8 @@ class FYBarChart(QFrame):
                        Qt.AlignmentFlag.AlignLeft, lab)
             lx += 76
 
-        # ---- y-axis ----
         series = [[r.get(k) or 0 for r in self.rows] for k in self.keys]
-        vmax = max((max(s) for s in series), default=1) or 1
+        vmax = max((max(s, default=0) for s in series), default=0) or 1
 
         p.setPen(QPen(QColor("#eeeeee")))
         for i in range(5):
@@ -514,7 +495,6 @@ class FYBarChart(QFrame):
             lw = fm.horizontalAdvance(label)
             p.drawText(plot_l - lw - 6, int(y) + 4, label)
 
-        # ---- bars (clipped) ----
         self._group_rects = []
         if self.rows:
             n = len(self.rows)
@@ -541,7 +521,6 @@ class FYBarChart(QFrame):
                 self._group_rects.append(
                     (gx, plot_t, group_w, avail_h, r))
 
-            # ---- x labels ----
             p.setPen(QColor("#777"))
             for i, r in enumerate(self.rows):
                 label_rect = (int(plot_l + i * group_w), plot_b + 4,
@@ -549,14 +528,11 @@ class FYBarChart(QFrame):
                 p.drawText(*label_rect, Qt.AlignmentFlag.AlignCenter,
                            str(r["y"]))
 
-        # ---- axis lines ----
         p.setPen(QPen(QColor("#cccccc")))
         p.drawLine(plot_l, plot_t, plot_l, plot_b)
         p.drawLine(plot_l, plot_b, plot_r, plot_b)
-
         p.end()
 
-    # ------------------------------------------------------------ hover
     def mouseMoveEvent(self, event):
         x = event.position().x()
         idx = -1
@@ -591,15 +567,9 @@ class FYBarChart(QFrame):
 
 
 # =========================================================================== #
-# Donut card wrapper (new)
+# Donut card wrapper
 # =========================================================================== #
 class DonutCard(QFrame):
-    """A white card containing a titled DonutChart.
-
-    Adds the missing white background + title + border around each donut,
-    so the donuts look like the rest of the dashboard.
-    """
-
     def __init__(self, title, parent=None):
         super().__init__(parent)
         self.setStyleSheet(
@@ -616,7 +586,6 @@ class DonutCard(QFrame):
         v.addWidget(lbl)
 
         self.chart = DonutChart(self)
-        # inner donut doesn't need its own border once inside the card
         self.chart.setStyleSheet(
             "QFrame { background: #ffffff; border: none; }")
         v.addWidget(self.chart, 1)
@@ -634,6 +603,8 @@ class DashboardPage(QWidget):
     def __init__(self, main):
         super().__init__()
         self.main = main
+        # Track live async fetchers so they aren't GC'd mid-flight
+        self._async_workers = []
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(10)
@@ -740,7 +711,7 @@ class DashboardPage(QWidget):
             small_row.addWidget(sb)
         v.addLayout(small_row)
 
-        # ---- donut charts (wrapped in titled cards) ----
+        # ---- donut charts ----
         donut_grid = QGridLayout()
         donut_grid.setSpacing(10)
         self.donuts = {}
@@ -759,7 +730,6 @@ class DashboardPage(QWidget):
             card = DonutCard(donut_titles[key], inner)
             self.donuts[key] = card
             donut_grid.addWidget(card, i // 4, i % 4)
-        # make columns stretch evenly
         for c in range(4):
             donut_grid.setColumnStretch(c, 1)
         v.addLayout(donut_grid)
@@ -799,92 +769,199 @@ class DashboardPage(QWidget):
         lay.addWidget(scroll)
 
     # ------------------------------------------------------------------ #
+    # Async helper
+    # ------------------------------------------------------------------ #
+    def _get_or_async(self, key, ttl, loader, default, apply_fn):
+        """
+        Read from cache. If warm, call apply_fn(value) immediately.
+        If cold, call apply_fn(default) immediately and dispatch a QThread
+        to fetch + cache the value, then call apply_fn(value) on the UI
+        thread once the fetch completes.
+        """
+        value = dashboard_cache.get(key, None)
+        if value is not None:
+            apply_fn(value)
+            return
+
+        # Cold: show the default (usually zeros / empty) and load in background
+        apply_fn(default)
+
+        fetcher = _AsyncFetcher(loader, key=key, ttl=ttl)
+        thread = QThread(self)
+        fetcher.moveToThread(thread)
+        thread.started.connect(fetcher.run)
+        fetcher.done.connect(lambda v: apply_fn(v if v is not None else default))
+        fetcher.done.connect(thread.quit)
+        thread.finished.connect(fetcher.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        # Keep alive
+        self._async_workers.append((fetcher, thread))
+        thread.start()
+
+    # ------------------------------------------------------------------ #
+    # Refresh (now cache-only + async fallback)
+    # ------------------------------------------------------------------ #
     def refresh(self):
-        try:
-            db_manager.ensure_dashboard_indexes()
-        except Exception:
-            pass
-        try:
-            stats = db_manager.dashboard_stats()
-        except Exception as exc:
-            W.error(self, f"Database error: {exc}")
-            return
-        for key, box in self.infoboxes.items():
-            if key == "received_amount":
-                box.set_value(money(stats["received_amount"]))
-            else:
-                box.set_value(stats.get(key, 0))
+        dc = dashboard_cache
 
-        sales = max(stats["sales_amount"], 1.0)
-        recv_pct = stats["received_amount"] / sales * 100
-        purch_pct = stats["purchase_amount"] / sales * 100
-        docs = max(stats["tax_invoices"], 1)
-        quote_pct = stats["quotations"] / docs * 100
-        self.bar_received.set(recv_pct)
-        self.bar_purchase.set(purch_pct)
-        self.bar_quote.set(quote_pct)
+        # ------------------------------------------------------------------
+        # Stats (KPI row + goal bars)
+        # ------------------------------------------------------------------
+        def apply_stats(stats):
+            if not stats:
+                return
+            for key, box in self.infoboxes.items():
+                if key == "received_amount":
+                    box.set_value(money(stats.get("received_amount", 0)))
+                else:
+                    box.set_value(stats.get(key, 0))
 
+            sales = max(stats.get("sales_amount", 0), 1.0)
+            recv_pct = stats.get("received_amount", 0) / sales * 100
+            purch_pct = stats.get("purchase_amount", 0) / sales * 100
+            docs = max(stats.get("tax_invoices", 1), 1)
+            quote_pct = stats.get("quotations", 0) / docs * 100
+            self.bar_received.set(recv_pct)
+            self.bar_purchase.set(purch_pct)
+            self.bar_quote.set(quote_pct)
+
+        self._get_or_async(
+            "dash.stats", dc.TTL_KPI,
+            db_manager.dashboard_stats,
+            {},                       # default: leave existing values
+            apply_stats,
+        )
+
+        # ------------------------------------------------------------------
+        # Monthly sales chart
+        # ------------------------------------------------------------------
         year = self.year_combo.currentData()
-        self.chart.set_values(
-            db_manager.monthly_sales("invtest2", "created", year))
+        key = f"dash.monthly_sales::{year}"
 
-        self.recent_table.clear_rows()
-        for r in db_manager.recent_invoices("tax", 8):
-            self.recent_table.add_row([
-                r["invid"], r["c_name"] or "", str(r["doc_date"]),
-                r["totalitems"], money(r["subtotal"]),
-                f"{float(r['taxrate']):g}%",
-                money(r["taxamount"]), money(r["totalamount"])])
+        def apply_monthly(values):
+            self.chart.set_values(values or [0] * 12)
 
-        try:
-            cms = db_manager.current_month_stats()
-        except Exception as exc:
-            W.error(self, f"Dashboard stats error: {exc}")
-            return
-        self.small_boxes["invcount"].set_value(cms["invcount"])
-        self.small_boxes["bounce_rate"].set_value(f"{cms['bounce_rate']:.1f}%")
-        self.small_boxes["clientcount"].set_value(cms["clientcount"])
-        self.small_boxes["monthturn"].set_value(money(cms["monthturn"]))
+        self._get_or_async(
+            key, dc.TTL_CHART,
+            lambda y=year: db_manager.monthly_sales("invtest2", "created", y),
+            [0] * 12,
+            apply_monthly,
+        )
 
+        # ------------------------------------------------------------------
+        # Recent invoices
+        # ------------------------------------------------------------------
+        def apply_recent(rows):
+            self.recent_table.clear_rows()
+            for r in (rows or []):
+                self.recent_table.add_row([
+                    r["invid"], r["c_name"] or "", str(r["doc_date"]),
+                    r["totalitems"], money(r["subtotal"]),
+                    f"{float(r['taxrate']):g}%",
+                    money(r["taxamount"]), money(r["totalamount"])])
+
+        self._get_or_async(
+            "dash.recent::tax::8", dc.TTL_FAST,
+            lambda: db_manager.recent_invoices("tax", 8),
+            [],
+            apply_recent,
+        )
+
+        # ------------------------------------------------------------------
+        # Current-month small boxes
+        # ------------------------------------------------------------------
+        def apply_month(cms):
+            if not cms:
+                return
+            self.small_boxes["invcount"].set_value(cms.get("invcount", 0))
+            self.small_boxes["bounce_rate"].set_value(
+                f"{cms.get('bounce_rate', 0):.1f}%")
+            self.small_boxes["clientcount"].set_value(cms.get("clientcount", 0))
+            self.small_boxes["monthturn"].set_value(
+                money(cms.get("monthturn", 0)))
+
+        self._get_or_async(
+            "dash.month", dc.TTL_KPI,
+            db_manager.current_month_stats,
+            {},
+            apply_month,
+        )
+
+        # ------------------------------------------------------------------
+        # Donuts
+        # ------------------------------------------------------------------
         fylab = self.fy_combo.currentData() or ""
         sy = int(str(fylab).split("-")[0]) if fylab else date.today().year - 1
         ey = sy + 1
-        donut_sources = {
-            "consumables": lambda: db_manager.donut_consumables(sy, ey),
-            "user_category": db_manager.donut_user_category,
-            "country": db_manager.donut_client_country,
-            "product_category": lambda: db_manager.donut_product_category(sy, ey),
-            "billed": db_manager.donut_billed_clients,
-            "docs": lambda: db_manager.donut_doc_count(sy, ey),
-            "client_type": db_manager.donut_client_type,
+
+        donut_defs = {
+            "consumables": (
+                f"dash.donut.consumables::{sy}-{ey}",
+                lambda: db_manager.donut_consumables(sy, ey)),
+            "user_category": (
+                "dash.donut.client_type",
+                db_manager.donut_user_category),
+            "country": (
+                "dash.donut.country",
+                db_manager.donut_client_country),
+            "product_category": (
+                f"dash.donut.product_category::{sy}-{ey}",
+                lambda: db_manager.donut_product_category(sy, ey)),
+            "billed": (
+                "dash.donut.billed",
+                db_manager.donut_billed_clients),
+            "docs": (
+                f"dash.donut.docs::{sy}-{ey}",
+                lambda: db_manager.donut_doc_count(sy, ey)),
+            "client_type": (
+                "dash.donut.client_type2",
+                db_manager.donut_client_type),
         }
-        for key, fn in donut_sources.items():
-            try:
-                self.donuts[key].set_data(fn())
-            except Exception:
-                self.donuts[key].set_data([])
 
-        self.reminder_table.clear_rows()
-        try:
-            for i, r in enumerate(db_manager.client_reminder(), 1):
+        for name, (key, loader) in donut_defs.items():
+            def make_apply(dname=name):
+                return lambda data: self.donuts[dname].set_data(data or [])
+            self._get_or_async(
+                key, dc.TTL_CHART, loader, [], make_apply())
+
+        # ------------------------------------------------------------------
+        # Reminder tables
+        # ------------------------------------------------------------------
+        def apply_reminders(rows):
+            self.reminder_table.clear_rows()
+            for i, r in enumerate(rows or [], 1):
                 self.reminder_table.add_row([
-                    i, r["invid"], r["c_name"] or "", r["item_name"] or "",
-                    r["mob"] or ""])
-        except Exception:
-            pass
+                    i, r["invid"], r["c_name"] or "",
+                    r["item_name"] or "", r["mob"] or ""])
 
-        self.qq_table.clear_rows()
-        try:
-            for i, r in enumerate(db_manager.quickquote_reminder(), 1):
+        self._get_or_async(
+            "dash.reminder.clients", dc.TTL_FAST,
+            db_manager.client_reminder,
+            [],
+            apply_reminders,
+        )
+
+        def apply_qq(rows):
+            self.qq_table.clear_rows()
+            for i, r in enumerate(rows or [], 1):
                 self.qq_table.add_row([
                     i, r["q_id"], r["name"] or "", r["mob"] or "",
-                    r["quantity"], money(r["subtotal"]), money(r["gst"]),
-                    money(r["total"])])
-        except Exception:
-            pass
+                    r["quantity"], money(r["subtotal"]),
+                    money(r["gst"]), money(r["total"])])
 
+        self._get_or_async(
+            "dash.reminder.quickquote", dc.TTL_FAST,
+            db_manager.quickquote_reminder,
+            [],
+            apply_qq,
+        )
+
+        # ------------------------------------------------------------------
+        # FY chart
+        # ------------------------------------------------------------------
         self._load_fy_chart()
 
+    # ------------------------------------------------------------------ #
     def _load_fy_chart(self):
         if not hasattr(self, "fy_chart"):
             return
@@ -893,10 +970,16 @@ class DashboardPage(QWidget):
             return
         sy = int(str(fylab).split("-")[0])
         ey = sy + 1
-        try:
-            rows = db_manager.fy_sales_chart(sy, ey)
-        except Exception as exc:
-            W.error(self, f"FY chart error: {exc}")
-            rows = []
+        dc = dashboard_cache
+        key = f"dash.fy_sales::{sy}-{ey}"
         title = f"Apr {sy} - Mar {ey}"
-        self.fy_chart.set_data(rows, title)
+
+        def apply_rows(rows):
+            self.fy_chart.set_data(rows or [], title)
+
+        self._get_or_async(
+            key, dc.TTL_CHART,
+            lambda s=sy, e=ey: db_manager.fy_sales_chart(s, e),
+            [],
+            apply_rows,
+        )

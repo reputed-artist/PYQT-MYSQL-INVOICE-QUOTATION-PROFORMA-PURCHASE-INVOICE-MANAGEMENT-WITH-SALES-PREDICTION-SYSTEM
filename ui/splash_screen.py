@@ -61,18 +61,6 @@ LOGO_CANDIDATES = (
 
 
 # --------------------------------------------------------------------------- #
-# Palette
-# --------------------------------------------------------------------------- #
-# BG_TOP       = QColor("#0b1e3a")     # deep navy
-# BG_MID       = QColor("#153a6b")     # royal blue
-# BG_BOTTOM    = QColor("#00a3c4")     # aqua
-# ACCENT       = QColor("#3c8dbc")     # your existing brand blue
-# ACCENT_LIGHT = QColor("#00c0ef")     # bright cyan
-# ACCENT_GLOW  = QColor(60, 141, 188, 90)
-# TEXT_PRIMARY = QColor("#ffffff")
-# TEXT_MUTED   = QColor(255, 255, 255, 160)
-
-# --------------------------------------------------------------------------- #
 # Black / Premium Palette
 # --------------------------------------------------------------------------- #
 BG_TOP       = QColor("#050608")
@@ -85,6 +73,7 @@ ACCENT_GLOW  = QColor(59, 130, 246, 85)
 
 TEXT_PRIMARY = QColor("#FFFFFF")
 TEXT_MUTED   = QColor(255, 255, 255, 155)
+
 
 # =========================================================================== #
 # Particle field (aurora dots)
@@ -209,7 +198,7 @@ class SplashScreen(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.setWindowIcon(app_icon())      # taskbar icon (splash is frameless)
+        self.setWindowIcon(app_icon())      # taskbar icon (frameless splash)
 
         # Size
         self._w, self._h = 720, 460
@@ -245,6 +234,13 @@ class SplashScreen(QWidget):
             (1.00, "Ready"),
         ]
 
+        # While held, reaching 100% parks the splash at "Ready" instead of
+        # closing. main.py holds it until the dashboard prefetch thread has
+        # finished (or a timeout expires) so the dashboard the user lands on
+        # is served from a warm cache. Purely a timing gate - the splash is
+        # painted and laid out exactly the same either way.
+        self._held = False
+
         # ---- logo ----
         self._logo_pm: QPixmap | None = self._resolve_logo()
 
@@ -265,8 +261,8 @@ class SplashScreen(QWidget):
     # Logo loader
     # ------------------------------------------------------------------ #
     def _resolve_logo(self) -> QPixmap | None:
-        # Shared resolver first (ui.app_icon) so the splash, every title bar and
-        # the taskbar always show the very same logo file.
+        # Shared resolver first (ui.app_icon) so the splash, every title bar
+        # and the taskbar always show the very same logo file.
         shared = logo_path()
         if shared:
             pm = QPixmap(shared)
@@ -330,6 +326,55 @@ class SplashScreen(QWidget):
         self.update()
 
         if self._progress >= 1.0:
+            if self._held:
+                # Parked: keep the "Ready" frame on screen and wait for
+                # release_finish(). Do not stack up fade-out timers.
+                self._timer.stop()
+            else:
+                self._begin_fade_out()
+
+    # ------------------------------------------------------------------ #
+    # Hold gate (used by main.py to cover the dashboard prefetch)
+    # ------------------------------------------------------------------ #
+    def hold(self) -> None:
+        """Stop the splash from closing on its own once it reaches 100%."""
+        self._held = True
+
+    def release_finish(self) -> None:
+        """
+        Let a held splash close.
+
+        Safe to call at any time:
+          * If progress < 100%, unparks the tick timer and lets the bar
+            finish its animation, then fades out.
+          * If progress == 100% (already parked), fades out immediately.
+
+        This is the FIX for "login appears at 50-60%": even if main.py
+        calls this early (because the prefetch thread finished fast), the
+        splash will not fade out until the bar visibly reaches 100%.
+        """
+        self._held = False
+
+        # Stop the fade-in loop if still running.
+        try:
+            if self._fade_in.isActive():
+                self._fade_in.stop()
+        except Exception:
+            pass
+
+        # If we haven't reached 100% yet, keep the splash alive and let
+        # _tick() finish the animation. _tick() will call _begin_fade_out()
+        # once progress hits 1.0 (because _held is now False).
+        try:
+            if self._progress < 1.0:
+                if not self._timer.isActive():
+                    self._timer.start()
+                return
+        except Exception:
+            pass
+
+        # Already at 100% — fade out now.
+        if self.isVisible():
             self._begin_fade_out()
 
     # ------------------------------------------------------------------ #
@@ -557,8 +602,7 @@ class SplashScreen(QWidget):
     # ------------------------------------------------------------------ #
     # Interaction: allow the user to close by clicking or pressing Esc
     # ------------------------------------------------------------------ #
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        # Optional: uncomment to let the user skip the splash
+    def mousePressEvent(self, event) -> None:  # noqa: N802        # Optional: uncomment to let the user skip the splash
         # self._progress = 1.0
         super().mousePressEvent(event)
 

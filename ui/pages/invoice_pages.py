@@ -1,6 +1,8 @@
 """
 Invoice pages - port of the Generate/List flows for
 Tax Invoice, Proforma, Quotation and Purchase Invoice.
+
+SQLite edition — works with db_manager backed by sqlite3.
 """
 from datetime import date, datetime
 
@@ -19,11 +21,24 @@ from utils import invoice_print
 from utils.helpers import money
 
 
+# --------------------------------------------------------------------------- #
+# SQLite-aware date coercion
+# --------------------------------------------------------------------------- #
 def _to_date(v):
+    """
+    Accept a date / datetime / ISO string (as SQLite returns) and coerce
+    it into a python date object.
+    """
     if isinstance(v, datetime):
         return v.date()
     if isinstance(v, date):
         return v
+    if isinstance(v, str) and v:
+        try:
+            # Accept both "YYYY-MM-DD" and "YYYY-MM-DD HH:MM:SS"
+            return datetime.fromisoformat(v.split(" ")[0]).date()
+        except (ValueError, TypeError):
+            pass
     return date.today()
 
 
@@ -40,7 +55,7 @@ def _first_item_names_for(doc, orderids):
 
 
 # --------------------------------------------------------------------------- #
-# Hand-drawn icons
+# Hand-drawn icons (unchanged)
 # --------------------------------------------------------------------------- #
 def _eye_icon(color="#ffffff", size=16):
     pm = QPixmap(size, size)
@@ -130,6 +145,169 @@ def _trash_icon(color="#ffffff", size=16):
     return QIcon(pm)
 
 
+def _drive_icon(size=15):
+    """(Legacy) Google-Drive-style triangle - kept, unused by the row now.
+
+    The Purchase-List Download button now uses the white download-arrow
+    glyph (_download_icon) so it matches Edit/View/Delete.
+    """
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    s = size / 16.0
+    p.scale(s, s)
+    p.setPen(Qt.PenStyle.NoPen)
+    # Simplified Drive triangle: three parallelograms.
+    #   top bar    - yellow, left blade - green, right blade - blue
+    top = QPainterPath()
+    top.moveTo(5.2, 2.4)
+    top.lineTo(10.8, 2.4)
+    top.lineTo(8.6, 6.2)
+    top.lineTo(3.0, 6.2)
+    top.closeSubpath()
+    p.setBrush(QColor("#FBBC05"))
+    p.drawPath(top)
+    left = QPainterPath()
+    left.moveTo(3.0, 6.2)
+    left.lineTo(8.6, 6.2)
+    left.lineTo(5.6, 13.6)
+    left.lineTo(1.4, 13.6)
+    left.closeSubpath()
+    p.setBrush(QColor("#34A853"))
+    p.drawPath(left)
+    right = QPainterPath()
+    right.moveTo(8.6, 6.2)
+    right.lineTo(14.6, 6.2)
+    right.lineTo(10.4, 13.6)
+    right.lineTo(5.6, 13.6)
+    right.closeSubpath()
+    p.setBrush(QColor("#4285F4"))
+    p.drawPath(right)
+    p.end()
+    return QIcon(pm)
+
+
+def _download_icon(color="#ffffff", size=15):
+    """White download arrow (shaft into tray) for 'Download PDF'.
+
+    Same stroke style as the other row icons so it matches Edit/View/Delete
+    at 22x22 while reading clearly as Download.
+    """
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    c = QColor(color)
+    pen = QPen(c)
+    pen.setWidthF(max(1.2, size * 0.11))
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    s = size / 16.0
+    p.scale(s, s)
+    # shaft + arrow head
+    p.drawLine(QPointF(8, 1.8), QPointF(8, 9.4))
+    head = QPainterPath()
+    head.moveTo(4.8, 6.6)
+    head.lineTo(8, 10.0)
+    head.lineTo(11.2, 6.6)
+    p.drawPath(head)
+    # tray
+    tray = QPainterPath()
+    tray.moveTo(2.6, 10.2)
+    tray.lineTo(2.6, 14.0)
+    tray.lineTo(13.4, 14.0)
+    tray.lineTo(13.4, 10.2)
+    p.drawPath(tray)
+    p.end()
+    return QIcon(pm)
+
+
+def _print_icon(color="#ffffff", size=15):
+    """White printer glyph for the one-click 'Print' row button."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    c = QColor(color)
+    pen = QPen(c)
+    pen.setWidthF(max(1.1, size * 0.10))
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    s = size / 16.0
+    p.scale(s, s)
+    # top paper tray
+    tray = QPainterPath()
+    tray.moveTo(4.4, 1.6)
+    tray.lineTo(11.6, 1.6)
+    tray.lineTo(11.6, 4.6)
+    tray.lineTo(4.4, 4.6)
+    tray.closeSubpath()
+    p.drawPath(tray)
+    # printer body
+    body = QPainterPath()
+    body.moveTo(2.2, 4.6)
+    body.lineTo(13.8, 4.6)
+    body.lineTo(13.8, 10.6)
+    body.lineTo(2.2, 10.6)
+    body.closeSubpath()
+    p.drawPath(body)
+    # printed sheet coming out
+    sheet = QPainterPath()
+    sheet.moveTo(4.4, 10.6)
+    sheet.lineTo(4.4, 14.2)
+    sheet.lineTo(11.6, 14.2)
+    sheet.lineTo(11.6, 10.6)
+    p.drawPath(sheet)
+    p.drawLine(QPointF(6.0, 12.2), QPointF(10.0, 12.2))
+    p.end()
+    return QIcon(pm)
+
+
+def _pdf_preview_icon(color="#ffffff", size=15):
+    """White document + magnifier glyph for 'Preview PDF'."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    c = QColor(color)
+    pen = QPen(c)
+    pen.setWidthF(max(1.2, size * 0.11))
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    s = size / 16.0
+    p.scale(s, s)
+    # document outline
+    doc = QPainterPath()
+    doc.moveTo(3.0, 1.6)
+    doc.lineTo(8.6, 1.6)
+    doc.lineTo(11.0, 4.0)
+    doc.lineTo(11.0, 11.4)
+    doc.lineTo(3.0, 11.4)
+    doc.closeSubpath()
+    p.drawPath(doc)
+    p.drawLine(QPointF(8.6, 1.6), QPointF(8.6, 4.0))
+    p.drawLine(QPointF(8.6, 4.0), QPointF(11.0, 4.0))
+    # magnifier handle over the doc corner
+    p.drawLine(QPointF(7.6, 9.2), QPointF(11.8, 13.4))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(color))
+    p.drawEllipse(QPointF(6.4, 8.0), 2.0, 2.0)
+    p.setBrush(Qt.GlobalColor.transparent)
+    pen2 = QPen(c)
+    pen2.setWidthF(max(1.2, size * 0.11))
+    p.setPen(pen2)
+    p.drawEllipse(QPointF(6.4, 8.0), 2.0, 2.0)
+    p.end()
+    return QIcon(pm)
+
+
 def _funnel_pixmap(size=22, color="#222"):
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
@@ -185,7 +363,7 @@ def _minus_icon(color="#ffffff", size=18):
 
 
 # =========================================================================== #
-# Searchable client combo
+# Searchable client combo (unchanged)
 # =========================================================================== #
 class _ClientFilterCombo(QWidget):
     def __init__(self, parent=None, on_change=None,
@@ -326,7 +504,7 @@ class _ClientFilterCombo(QWidget):
 
 
 # =========================================================================== #
-# Searchable product combo
+# Searchable product combo (unchanged)
 # =========================================================================== #
 class _ProductFilterCombo(QWidget):
     def __init__(self, parent=None, on_change=None,
@@ -461,8 +639,6 @@ class InvoiceGenPage(QWidget):
         self.edit_orderid = edit_orderid
         self.title = (f"Edit {self.reg['label']}" if edit_orderid
                       else f"Generate {self.reg['label']}")
-        # the original views name the purchase document 'Supplier Invoice'
-        # (genpurchaseinvoice.php / editpurchaseinv.php)
         gen_label = ("Supplier Invoice" if doc == "purchase"
                      else self.reg["label"])
         self.breadcrumb = (f"Edit {gen_label}" if edit_orderid
@@ -476,7 +652,6 @@ class InvoiceGenPage(QWidget):
 
     # ------------------------------------------------------------------ UI
     def _build(self):
-        # ---------- whole page is scrollable ----------
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -499,7 +674,6 @@ class InvoiceGenPage(QWidget):
         page_lay.setContentsMargins(0, 0, 0, 0)
         page_lay.setSpacing(0)
 
-        # ---------- card ----------
         card = QFrame()
         card.setObjectName("InvoiceGenCard")
         card.setStyleSheet("""
@@ -537,7 +711,6 @@ class InvoiceGenPage(QWidget):
         card_lay.setContentsMargins(20, 4, 20, 18)
         card_lay.setSpacing(16)
 
-        # ---------------- top form ----------------
         form = QGridLayout()
         form.setHorizontalSpacing(14)
         form.setVerticalSpacing(10)
@@ -564,7 +737,6 @@ class InvoiceGenPage(QWidget):
                              Qt.AlignmentFlag.AlignVCenter)
         form.addWidget(lbl_sup, 1, 2)
 
-        # --- searchable client combo (popup with search box) ---
         self.client_combo = _ClientFilterCombo(
             on_change=self._client_changed,
             placeholder="Select a Person or Company")
@@ -595,7 +767,6 @@ class InvoiceGenPage(QWidget):
 
         card_lay.addLayout(form)
 
-        # ---------------- items table ----------------
         cols = ["", "Item No", "Item Name *", "Description Name",
                 "HSN *", "Qty *", "Price *", "Total *", ""]
         self.items_table = QTableWidget(0, len(cols))
@@ -603,8 +774,6 @@ class InvoiceGenPage(QWidget):
         self.items_table.verticalHeader().setVisible(False)
         self.items_table.verticalHeader().setDefaultSectionSize(32)
 
-        # no internal scrolling — the table grows with its rows and the
-        # outer page scroll handles overflow
         self.items_table.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.items_table.setHorizontalScrollBarPolicy(
@@ -641,13 +810,18 @@ class InvoiceGenPage(QWidget):
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
 
+        for c in (1, 4, 5, 6, 7):
+            hitem = self.items_table.horizontalHeaderItem(c)
+            if hitem is not None:
+                hitem.setTextAlignment(
+                    Qt.AlignmentFlag.AlignCenter |
+                    Qt.AlignmentFlag.AlignVCenter)
+
         card_lay.addWidget(self.items_table)
 
-        # ---------------- bottom section: Notes | Totals ----------------
         bottom_row = QHBoxLayout()
         bottom_row.setSpacing(24)
 
-        # --- Notes (left, compact) ---
         notes_col = QVBoxLayout()
         notes_col.setSpacing(6)
 
@@ -693,7 +867,6 @@ class InvoiceGenPage(QWidget):
 
         bottom_row.addLayout(notes_col, 3)
 
-        # --- Totals (right, compact) ---
         totals_box = QFrame()
         totals_box.setStyleSheet(
             "QFrame { background: #ffffff; border: none; }")
@@ -818,10 +991,13 @@ class InvoiceGenPage(QWidget):
         chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable |
                      Qt.ItemFlag.ItemIsEnabled)
         chk.setCheckState(Qt.CheckState.Unchecked)
+        chk.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self.items_table.setItem(r, 0, chk)
 
-        self.items_table.setItem(r, 1, QTableWidgetItem(
-            str(data.get("orderno", r + 1))))
+        no = QTableWidgetItem(str(data.get("orderno", r + 1)))
+        no.setTextAlignment(Qt.AlignmentFlag.AlignCenter |
+                           Qt.AlignmentFlag.AlignVCenter)
+        self.items_table.setItem(r, 1, no)
 
         combo = QComboBox()
         combo.addItem("Select Item", None)
@@ -841,14 +1017,18 @@ class InvoiceGenPage(QWidget):
         desc = QLineEdit(data.get("item_desc") or "")
         self.items_table.setCellWidget(r, 3, desc)
         hsn = QLineEdit(str(data.get("hsn", "8443")))
+        hsn.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.items_table.setCellWidget(r, 4, hsn)
         qty = QLineEdit(str(data.get("quantity", 1)))
+        qty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         qty.textChanged.connect(self._recalc)
         self.items_table.setCellWidget(r, 5, qty)
         price = QLineEdit(str(data.get("price", "")))
+        price.setAlignment(Qt.AlignmentFlag.AlignCenter)
         price.textChanged.connect(self._recalc)
         self.items_table.setCellWidget(r, 6, price)
         total = QLineEdit(str(data.get("total", "")))
+        total.setAlignment(Qt.AlignmentFlag.AlignCenter)
         total.setReadOnly(True)
         total.setStyleSheet("background:#f7f9fb;")
         self.items_table.setCellWidget(r, 7, total)
@@ -993,9 +1173,7 @@ class InvoiceGenPage(QWidget):
             return
         self.invid.setText(master["invid"])
 
-        # Set the client WITHOUT triggering the on_change callback, so the
-        # saved invoice address isn't overwritten by the client's current
-        # address.
+        # Set the client WITHOUT triggering the on_change callback
         saved_cb = self.client_combo._on_change
         self.client_combo._on_change = None
         try:
@@ -1004,6 +1182,7 @@ class InvoiceGenPage(QWidget):
         finally:
             self.client_combo._on_change = saved_cb
 
+        # SQLite stores dates as TEXT; _to_date() handles both shapes.
         d = _to_date(master.get("created") or master.get("invdate"))
         self.date_edit.setDate(QDate(d.year, d.month, d.day))
         self.address.setPlainText(master.get("c_add") or "")
@@ -1055,11 +1234,98 @@ class InvoiceGenPage(QWidget):
             W.error(self, f"Save failed: {exc}")
             return
         W.success(self, f"{self.reg['label']} {invid} saved successfully.")
-        self.main.navigate(f"{self.doc}_list")
 
+        # Attach client fields needed by the print invoice builder so mob,
+        # gst, tax type, and country are available in the rendered PDF/HTML.
+        # (Purchase needs this too: the purchase print shows supplier name,
+        # address, mob and tax id.)
+        if cid:
+            try:
+                _client = db_manager.get_client(cid)
+                if _client:
+                    master["c_name"] = _client.get("c_name") or ""
+                    master["c_add"] = _client.get("c_add") or ""
+                    master["mob"] = _client.get("mob") or ""
+                    master["gst"] = _client.get("gst") or ""
+                    master["c_type"] = _client.get("c_type") or ""
+                    master["country"] = _client.get("country") or ""
+            except Exception:
+                pass
+
+        # Save current page state (client + items) so we can restore it after
+        # the print window closes. Only the invoice number changes.
+        self._saved_cid = self.client_combo.current_cid()
+        self._saved_items_data = self._collect_items()
+
+        # Show print preview instead of redirecting to list.
+        # When the print window is closed, refresh this generate page with a
+        # brand-new invoice number so the user can issue another one easily.
+        dlg = invoice_print.show_invoice_view(
+            self, self.doc, master, items,
+            title=f"{self.reg['label']} {invid}")
+        if dlg is not None:
+            dlg.finished.connect(
+                lambda _result, page=self: page._refresh_after_print())
+
+    # ------------------------------------------------------------- helpers
+    def _refresh_after_print(self):
+        """Refresh this generate page with a brand-new invoice number once the
+        print window has closed. Resets the client combo, items and address so
+        the user can start a fresh document."""
+        # Edit mode: don't wipe the form — go back to the list instead.
+        if self.edit_orderid:
+            try:
+                self.main.navigate(f"{self.doc}_list")
+            except Exception:
+                pass
+            return
+        # Fetch the NEXT number now that the previous one is saved, so the
+        # page never shows a stale/duplicate number (0006 -> 0007).
+        try:
+            self.invid.setText(db_manager.next_invoice_no(self.doc))
+        except Exception:
+            pass
+
+        # Reset client combo
+        if getattr(self, "_saved_cid", None) is not None:
+            saved = self.client_combo._on_change
+            self.client_combo._on_change = None
+            try:
+                self.client_combo.set_cid(None)
+            finally:
+                self.client_combo._on_change = saved
+        # Reset client name and address
+        self.address.setPlainText("")
+        # Reset items table (keep one empty row, like a fresh generate page)
+        self.items_table.setRowCount(0)
+        self._add_row()
+        self._autosize_items_table()
+
+    def refresh(self):
+        """Called by MainWindow.navigate() every time the page is opened.
+
+        Generate pages are cached, so without this the invoice number stays
+        frozen at its construction-time value (e.g. 0006 forever). Refreshing
+        here guarantees 0006 -> 0007 on every reopen. Edit mode keeps its
+        existing number.
+        """
+        if self.edit_orderid:
+            return
+        # Don't clobber a number the user just saved-but-not-printed yet;
+        # _refresh_after_print() already advanced it. Only advance when the
+        # current text is no longer the live "next" number... simplest robust
+        # rule: always sync to live next number when the form is pristine
+        # (no client + single empty row), otherwise leave user input alone.
+        try:
+            pristine = (self.client_combo.current_cid() is None
+                         and self.items_table.rowCount() <= 1)
+            if pristine:
+                self.invid.setText(db_manager.next_invoice_no(self.doc))
+        except Exception:
+            pass
 
 # =========================================================================== #
-# Invoice List Page
+# InvoiceListPage
 # =========================================================================== #
 class InvoiceListPage(QWidget):
     CARDS_PER_PAGE = 12
@@ -1218,11 +1484,17 @@ class InvoiceListPage(QWidget):
         return rows
 
     def _row_fy(self, r):
+        """
+        Compute the financial year (Apr–Mar) label from the row's date.
+        SQLite returns dates as TEXT so this handles both shapes.
+        """
         dc = self.reg["date_col"]
         try:
             d = r[dc]
             if isinstance(d, str):
                 d = datetime.fromisoformat(d.split(" ")[0]).date()
+            elif isinstance(d, datetime):
+                d = d.date()
             yr = d.year
             if d.month > 3:
                 return f"{yr}-{yr + 1}"
@@ -1401,9 +1673,9 @@ class InvoiceListPage(QWidget):
         view_btn.setIconSize(QSize(15, 15))
         view_btn.setToolTip("View")
         view_btn.setStyleSheet(
-            "QPushButton { background:#6c757d; border:1px solid #5a6268;"
+            "QPushButton { background:#f0ad4e; border:1px solid #eea236;"
             " border-radius:3px; padding:0; }"
-            "QPushButton:hover { background:#5a6268; }")
+            "QPushButton:hover { background:#ec971f; }")
         view_btn.clicked.connect(lambda _, rec=r: self._view(rec))
 
         del_btn = QPushButton()
@@ -1421,6 +1693,36 @@ class InvoiceListPage(QWidget):
         actions.addWidget(edit_btn)
         actions.addStretch(1)
         actions.addWidget(view_btn)
+        # Download + Print on every printable invoice list (tax / proforma /
+        # purchase / quote) - same 22x22 size, equi-distant via equal stretches.
+        if self.doc in ("tax", "proforma", "purchase", "quote"):
+            actions.addStretch(1)
+            dl_btn = QPushButton()
+            dl_btn.setFixedSize(22, 22)
+            dl_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            dl_btn.setIcon(_download_icon("#ffffff", 15))
+            dl_btn.setIconSize(QSize(15, 15))
+            dl_btn.setToolTip("Download PDF")
+            dl_btn.setStyleSheet(
+                "QPushButton { background:#00a65a; border:1px solid #008d4c;"
+                " border-radius:3px; padding:0; }"
+                "QPushButton:hover { background:#008d4c; }")
+            dl_btn.clicked.connect(lambda _, rec=r: self._download_pdf(rec))
+            actions.addWidget(dl_btn)
+
+            actions.addStretch(1)
+            print_btn = QPushButton()
+            print_btn.setFixedSize(22, 22)
+            print_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            print_btn.setIcon(_print_icon("#ffffff", 15))
+            print_btn.setIconSize(QSize(15, 15))
+            print_btn.setToolTip("Print")
+            print_btn.setStyleSheet(
+                "QPushButton { background:#00c0ef; border:1px solid #00acd7;"
+                " border-radius:3px; padding:0; }"
+                "QPushButton:hover { background:#00acd7; }")
+            print_btn.clicked.connect(lambda _, rec=r: self._print(rec))
+            actions.addWidget(print_btn)
         actions.addStretch(1)
         actions.addWidget(del_btn)
         v.addLayout(actions)
@@ -1429,8 +1731,6 @@ class InvoiceListPage(QWidget):
 
     def _view(self, r):
         master, items = db_manager.get_invoice(self.doc, r["orderid"])
-        # Tax Invoice / Proforma Invoice open the real print document
-        # (app/views/print/print taxinv.php | print proinv.php)
         if invoice_print.show_invoice_view(
                 self, self.doc, master, items,
                 title=f"{self.reg['label']} {r['invid']}"):
@@ -1438,7 +1738,7 @@ class InvoiceListPage(QWidget):
 
         dlg = QWidget()
         dlg.setWindowTitle(f"{self.reg['label']} {r['invid']}")
-        W.apply(dlg)                       # brand mark on the title bar
+        W.apply(dlg)
         v = QVBoxLayout(dlg)
         v.addWidget(QLabel(
             f"<b>{r['invid']}</b><br/>Client: {master.get('c_name')}"
@@ -1446,10 +1746,6 @@ class InvoiceListPage(QWidget):
         t = W.DataTable(["#", "Item", "Description", "HSN", "Qty", "Price",
                          "Total"], stretch_all=True)
         for i, it in enumerate(items, 1):
-            # Quotation items (the `quote` table in db.sql) have NO hsn and NO
-            # item_desc column at all, so every field is read with .get() -
-            # same convention as invoice_print.build_invoice_html() and
-            # db_manager.item_report() (which substitutes 8443 AS hsn).
             t.add_row([i, it.get("item_name") or "",
                        it.get("item_desc") or "",
                        it.get("hsn") or "",
@@ -1466,8 +1762,36 @@ class InvoiceListPage(QWidget):
         self._view_windows = getattr(self, "_view_windows", []) + [dlg]
 
     def _print(self, r):
-        master, items = db_manager.get_invoice(self.doc, r["orderid"])
-        invoice_print.show_print_preview(self, self.doc, master, items)
+        try:
+            master, items = db_manager.get_invoice(self.doc, r["orderid"])
+        except Exception as exc:
+            W.error(self, f"Load failed: {exc}")
+            return
+        invoice_print.print_invoice(self, self.doc, master, items)
+
+    def _preview_pdf(self, r):
+        """On-screen PDF preview of the invoice (unused by row, kept)."""
+        try:
+            master, items = db_manager.get_invoice(self.doc, r["orderid"])
+        except Exception as exc:
+            W.error(self, f"Load failed: {exc}")
+            return
+        invoice_print.show_invoice_view(
+            self, self.doc, master, items,
+            title=f"{self.reg['label']} {r['invid']} - PDF Preview")
+
+    def _download_pdf(self, r):
+        """Direct 'Download PDF' (Save-As dialog, no preview)."""
+        try:
+            master, items = db_manager.get_invoice(self.doc, r["orderid"])
+        except Exception as exc:
+            W.error(self, f"Load failed: {exc}")
+            return
+        ok = invoice_print.save_invoice_pdf(
+            self, self.doc, master, items,
+            title=f"{self.reg['label']} {r['invid']}")
+        if ok is False:
+            W.error(self, "Failed to save PDF.")
 
     def _edit(self, r):
         page = InvoiceGenPage(self.main, self.doc, edit_orderid=r["orderid"])

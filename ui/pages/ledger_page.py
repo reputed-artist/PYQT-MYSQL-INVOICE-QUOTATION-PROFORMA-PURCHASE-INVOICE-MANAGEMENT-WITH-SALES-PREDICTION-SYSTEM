@@ -211,13 +211,13 @@ class _AddTransactionDialog(QDialog):
             self.payid.setText("")
         self.payid.setReadOnly(True)
 
-        # company (fixed, read-only)
+        # company (fixed, disabled like bootstrap)
         self.company = QLineEdit(c_name)
-        self.company.setReadOnly(True)
+        self.company.setEnabled(False)
 
-        # location (fixed, read-only)
+        # location (fixed, disabled like bootstrap)
         self.loc = QLineEdit(location or "")
-        self.loc.setReadOnly(True)
+        self.loc.setEnabled(False)
 
         # purpose
         self.purpose = QPlainTextEdit()
@@ -234,11 +234,25 @@ class _AddTransactionDialog(QDialog):
         self.dt.setDisplayFormat("dd-MM-yyyy")
         self.dt.setDate(QDate.currentDate())
 
-        # bank
+        # bank - names come from the bankdetails table (Settings > Bank
+        # Details), loaded fresh so newly added banks show up immediately.
+        # Only real bank names are listed - no blank / null entry.
         self.bank = QComboBox()
-        self.bank.addItem("", "")
-        self.bank.addItem("YES BANK", "YES BANK")
-        self.bank.addItem("ICICI BANK", "ICICI BANK")
+        try:
+            _banks = db_manager.get_banks() or []
+        except Exception:
+            _banks = []
+        _seen = set()
+        for _b in _banks:
+            _name = ((_b.get("bname") if isinstance(_b, dict) else None)
+                     or "").strip()
+            # skip NULL / empty / whitespace-only names and de-duplicate
+            if _name and _name.lower() not in _seen:
+                _seen.add(_name.lower())
+                self.bank.addItem(_name, _name)
+        if self.bank.count() == 0:
+            for _fallback in ("Cash", "Bank Transfer"):
+                self.bank.addItem(_fallback, _fallback)
 
         # creation date (read-only)
         self.created = QLineEdit(date.today().strftime("%d-%b-%Y"))

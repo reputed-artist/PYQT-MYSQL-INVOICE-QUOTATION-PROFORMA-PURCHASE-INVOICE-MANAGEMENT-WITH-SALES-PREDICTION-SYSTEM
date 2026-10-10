@@ -1,0 +1,5 @@
+QT=6.11.0
+PAGE_PRINT_METHODS=['pdfPrintingFinished', 'printRequested', 'printRequestedByFrame', 'printToPdf']
+VIEW_PRINT_METHODS=['pdfPrintingFinished', 'print', 'printFinished', 'printRequested', 'printRequestedByFrame', 'printToPdf']
+has_page_print=False
+has_view_print=True

@@ -6,126 +6,205 @@ Tables are the exact schema from db.sql:
   bankdetails, paidhistory, invtest/invtest2 (tax), protest/protest2 (proforma),
   quote/quote2, purchaseinv/purchaseinv2, quickquote, delivery_addresses
 """
-import pymysql
+import os
+import shutil
+import sqlite3
+import threading
+from datetime import date, datetime
 
-from datetime import date
-
-from config import DB_CONFIG
+from config import DB_CONFIG, DB_FILE, BACKUP_DIR
+from database import sqlite_compat
 
 _CONN = None
+_CONN_LOCK = threading.RLock()
+_INIT_DONE = False
 
 
+# --------------------------------------------------------------------------- #
+#  Connection
+# --------------------------------------------------------------------------- #
 def get_connection():
-    """Persistent shared connection (single-threaded UI): avoids the per-query
-    connect cost that caused UI freezes; pings/reconnects transparently."""
+    """Persistent shared SQLite connection.
+
+    One connection is reused for the whole process (the UI is mostly
+    single-threaded and the scraper worker runs queries off-thread), which
+    avoids the per-query connect cost.  ``check_same_thread=False`` plus WAL
+    mode keeps concurrent readers safe.  The first call creates the local
+    database file and seeds it from ``db.sql`` when it does not exist yet.
+    """
+    global _CONN, _INIT_DONE
+    with _CONN_LOCK:
+        if _CONN is None:
+            db_dir = os.path.dirname(os.path.abspath(DB_FILE))
+            try:
+                os.makedirs(db_dir, exist_ok=True)
+            except OSError as exc:
+                raise RuntimeError(
+                    f"Cannot create DB directory: {db_dir}\n"
+                    f"Original error: {exc}"
+                ) from exc
+
+            if not os.access(db_dir, os.W_OK):
+                raise RuntimeError(
+                    f"DB directory is not writable: {db_dir}\n"
+                    f"The database must live under %LOCALAPPDATA%, "
+                    f"not inside C:\\Program Files."
+                )
+
+            try:
+                _CONN = sqlite3.connect(
+                    DB_FILE,
+                    check_same_thread=False,
+                    timeout=10,
+                    isolation_level=None,          # autocommit, like pymysql
+                    detect_types=sqlite3.PARSE_DECLTYPES,
+                )
+            except sqlite3.OperationalError as exc:
+                raise RuntimeError(
+                    f"Unable to open database file:\n"
+                    f"  DB_FILE  = {DB_FILE}\n"
+                    f"  dir      = {db_dir}\n"
+                    f"  writable = {os.access(db_dir, os.W_OK)}\n"
+                    f"  error    = {exc}"
+                ) from exc
+
+            _CONN.row_factory = sqlite3.Row
+            sqlite_compat.configure(_CONN)
+
+        if not _INIT_DONE:
+            _INIT_DONE = True
+            from database.init_sqlite import init_sqlite_database
+            init_sqlite_database(DB_FILE, conn=_CONN)
+        return _CONN
+
+
+def close_connection():
+    """Close the shared connection (used after a restore)."""
     global _CONN
-    if _CONN is not None:
-        try:
-            _CONN.ping(reconnect=True)
-            return _CONN
-        except Exception:
+    with _CONN_LOCK:
+        if _CONN is not None:
             try:
                 _CONN.close()
-            except Exception:
-                pass
-            _CONN = None
-    _CONN = pymysql.connect(
-        host=DB_CONFIG["host"],
-        port=DB_CONFIG["port"],
-        user=DB_CONFIG["user"],
-        password=DB_CONFIG["password"],
-        database=DB_CONFIG["database"],
-        charset=DB_CONFIG["charset"],
-        cursorclass=pymysql.cursors.DictCursor,
-        autocommit=True,
-        connect_timeout=3,
-    )
-    return _CONN
+            finally:
+                _CONN = None
 
 
+class _transaction:
+    """Explicit BEGIN/COMMIT block (autocommit is the default)."""
+
+    def __enter__(self):
+        self.conn = get_connection()
+        self.conn.execute("BEGIN")
+        return self.conn
+
+    def __exit__(self, exc_type, exc, tb):
+        self.conn.execute("COMMIT" if exc_type is None else "ROLLBACK")
+        return False
+
+
+# --------------------------------------------------------------------------- #
+#  Dashboard indexes
+# --------------------------------------------------------------------------- #
+# The stock db.sql schema ships ONLY primary keys, so every dashboard JOIN on
+# invtest.orderid / invtest2.orderid / products.name / invtest2.created would
+# full-scan.  The indexes are created once (on first connection) and afterwards
+# every chart query runs indexed in milliseconds.
 _INDEXES_READY = False
-_INDEX_CACHE = {}  # (table, column) -> bool, avoids repeated I_S probes
+_INDEX_CACHE = {}          # (table, column) -> bool
+
+
+def _has_index(table, column):
+    """True when *table* has an index whose leading column is *column*."""
+    try:
+        indexes = DB.query(f"PRAGMA index_list({table})")
+    except Exception:
+        return False
+    for row in indexes:
+        name = row["name"]
+        if not name:
+            continue
+        try:
+            info = DB.query(f"PRAGMA index_info({name})")
+        except Exception:
+            continue
+        if info and info[0]["name"] == column:
+            return True
+    return False
 
 
 def _indexed(columns=()):
-    # True when ensure_dashboard_indexes() already created the given
-    # (table, column) secondary indexes; else callers use Python-join fallback.
-    # INFORMATION_SCHEMA probes are cached so each dashboard load pays ~1 probe
-    # per column, not one per chart function.
+    # True when the given (table, column) secondary indexes exist; else callers
+    # use their Python-join fallback.  Results are cached so each dashboard
+    # load pays one PRAGMA per column, not one per chart function.
     if not _INDEXES_READY:
         return False
     try:
-        missing = [c for c in columns if c not in _INDEX_CACHE]
-        if missing:
-            placeholders = ",".join(["(%s,%s)"] * len(missing))
-            rows = DB.query(
-                "SELECT TABLE_NAME AS t, COLUMN_NAME AS c"
-                " FROM INFORMATION_SCHEMA.STATISTICS"
-                " WHERE TABLE_SCHEMA = DATABASE()"
-                f" AND (TABLE_NAME, COLUMN_NAME) IN ({placeholders})",
-                tuple(x for pair in missing for x in pair))
-            have = {(r["t"], r["c"]) for r in rows}
-            for c in missing:
-                _INDEX_CACHE[c] = c in have
+        for pair in [c for c in columns if c not in _INDEX_CACHE]:
+            _INDEX_CACHE[pair] = _has_index(pair[0], pair[1])
         return all(_INDEX_CACHE.get(c, False) for c in columns)
     except Exception:
-        return True  # assume DDL path worked; SQL fallback raises if not
+        return True      # assume the DDL worked; the SQL path raises if not
 
 
 def ensure_dashboard_indexes():
-    # The stock db.sql schema ships ONLY primary keys, so every dashboard
-    # JOIN on invtest.orderid / invtest2.orderid / products.name /
-    # invtest2.created full-scans. First dashboard load creates the missing
-    # secondary indexes once (CREATE INDEX IF NOT EXISTS equivalent);
-    # afterwards all chart queries run indexed in milliseconds.
+    """Create the dashboard secondary indexes once per process."""
     global _INDEXES_READY
     if _INDEXES_READY:
         return
     stmts = [
-        ("invtest", "orderid",
-         "CREATE INDEX ix_invtest_orderid ON invtest (orderid)"),
-        ("invtest2", "orderid",
-         "CREATE INDEX ix_invtest2_orderid ON invtest2 (orderid)"),
-        ("invtest2", "created",
-         "CREATE INDEX ix_invtest2_created ON invtest2 (created)"),
-        ("products", "name",
-         "CREATE INDEX ix_products_name ON products (name(191))"),
+        "CREATE INDEX IF NOT EXISTS ix_invtest_orderid ON invtest (orderid)",
+        "CREATE INDEX IF NOT EXISTS ix_invtest2_orderid ON invtest2 (orderid)",
+        "CREATE INDEX IF NOT EXISTS ix_invtest2_created ON invtest2 (created)",
+        "CREATE INDEX IF NOT EXISTS ix_products_name ON products (name)",
         # reminder-table joins (same no-index problem as invtest):
-        ("protest", "orderid",
-         "CREATE INDEX ix_protest_orderid ON protest (orderid)"),
-        ("protest2", "orderid",
-         "CREATE INDEX ix_protest2_orderid ON protest2 (orderid)"),
-        ("protest2", "cid",
-         "CREATE INDEX ix_protest2_cid ON protest2 (cid)"),
-        ("quickquote", "p_id",
-         "CREATE INDEX ix_quickquote_pid ON quickquote (p_id)"),
+        "CREATE INDEX IF NOT EXISTS ix_protest_orderid ON protest (orderid)",
+        "CREATE INDEX IF NOT EXISTS ix_protest2_orderid ON protest2 (orderid)",
+        "CREATE INDEX IF NOT EXISTS ix_protest2_cid ON protest2 (cid)",
+        "CREATE INDEX IF NOT EXISTS ix_quickquote_pid ON quickquote (p_id)",
     ]
-    for table, column, ddl in stmts:
+    for ddl in stmts:
         try:
-            have = DB.query(
-                "SELECT COUNT(*) AS n FROM INFORMATION_SCHEMA.STATISTICS"
-                " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s"
-                " AND COLUMN_NAME = %s", (table, column))
-            if have and int(have[0]["n"] or 0) == 0:
-                DB.execute(ddl)
-                _INDEX_CACHE[(table, column)] = True
-            else:
-                _INDEX_CACHE[(table, column)] = bool(
-                    have and int(have[0]["n"] or 0) > 0)
+            DB.execute(ddl)
         except Exception:
-            pass  # best effort - charts have Python-join fallbacks
+            pass      # best effort - charts have Python-join fallbacks
+
+    # client.cid and invtest2.cid are primary keys, so they are indexed by
+    # definition and need no DDL. Seed them directly: location_tree() asks for
+    # them on every dashboard load, and without this each load re-ran two
+    # PRAGMA index_list/index_info probes for the same columns.
+    _INDEX_CACHE[("client", "cid")] = True
+    _INDEX_CACHE[("invtest2", "cid")] = True
+
     _INDEXES_READY = True
 
 
 class DB:
-    """Thin static query helpers (one connection per call)."""
+    """Thin static query helpers on top of sqlite3.
+
+    Every statement is written in MySQL dialect and translated by
+    ``database.sqlite_compat`` right before execution, so callers (and the UI)
+    never see the difference.  Rows come back as ``dict`` objects, exactly
+    like pymysql's DictCursor.
+    """
+
+    @staticmethod
+    def _stmt(sql, params):
+        """Translate a MySQL statement.  pymysql only ran its ``%``-escaping
+        interpolation when parameters were supplied, so mirror that here for
+        the '%%' handling used by the DATE_FORMAT calls."""
+        return sqlite_compat.rewrite_sql(
+            sql, named=isinstance(params, dict), interpolate=params is not None)
 
     @staticmethod
     def query(sql, params=None):
+        stmt = DB._stmt(sql, params)
         conn = get_connection()
-        with conn.cursor() as cur:
-            cur.execute(sql, params or ())
-            return cur.fetchall()
+        with _CONN_LOCK:
+            cur = conn.execute(stmt, params if params else ())
+            try:
+                return [dict(r) for r in cur.fetchall()]
+            finally:
+                cur.close()
 
     @staticmethod
     def one(sql, params=None):
@@ -134,11 +213,28 @@ class DB:
 
     @staticmethod
     def execute(sql, params=None, return_id=False):
+        stmt = DB._stmt(sql, params)
         conn = get_connection()
-        with conn.cursor() as cur:
-            cur.execute(sql, params or ())
-            conn.commit()
-            return cur.lastrowid if return_id else cur.rowcount
+        with _CONN_LOCK:
+            cur = conn.execute(stmt, params if params else ())
+            try:
+                return cur.lastrowid if return_id else cur.rowcount
+            finally:
+                cur.close()
+
+    @staticmethod
+    def executemany(sql, seq_of_params):
+        first = next(iter(seq_of_params), None)
+        stmt = sqlite_compat.rewrite_sql(
+            sql, named=isinstance(first, dict), interpolate=True)
+        conn = get_connection()
+        with _CONN_LOCK:
+            cur = conn.cursor()
+            try:
+                cur.executemany(stmt, seq_of_params)
+                return cur.rowcount
+            finally:
+                cur.close()
 
     @staticmethod
     def scalar(sql, params=None, default=0):
@@ -147,6 +243,68 @@ class DB:
             return default
         v = next(iter(row.values()), default)
         return v if v is not None else default
+
+    @staticmethod
+    def transaction():
+        return _transaction()
+
+
+# --------------------------------------------------------------------------- #
+#  Backup / restore  (used by Settings -> Backup / Restore)
+# --------------------------------------------------------------------------- #
+def backup_database(dest_path=None):
+    """Write a consistent copy of the local SQLite file.
+
+    Uses sqlite3's online backup API, so it is safe while the app is running.
+    Returns the path of the created file.
+    """
+    conn = get_connection()
+    if not dest_path:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest_path = os.path.join(BACKUP_DIR, f"sales_aura_{stamp}.db")
+    dest_path = os.path.abspath(dest_path)
+    target = sqlite3.connect(dest_path)
+    try:
+        with _CONN_LOCK:
+            conn.backup(target)
+    finally:
+        target.close()
+    return dest_path
+
+
+def restore_database(src_path):
+    """Replace the live database with a previously created backup file.
+
+    The source must be a readable SQLite database carrying this app's tables.
+    The shared connection is closed, the file is swapped in, and the next query
+    re-opens it.
+    """
+    if not src_path or not os.path.isfile(src_path):
+        raise FileNotFoundError(f"Backup file not found: {src_path}")
+
+    probe = sqlite3.connect(src_path)
+    try:
+        names = {r[0] for r in probe.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        probe.close()
+    missing = {"admin", "client", "products", "invtest2"} - names
+    if missing:
+        raise ValueError("Not a Sales Aura backup - missing tables: "
+                         + ", ".join(sorted(missing)))
+
+    close_connection()
+    for suffix in ("-wal", "-shm"):
+        stale = DB_FILE + suffix
+        if os.path.exists(stale):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+    shutil.copyfile(src_path, DB_FILE)
+    get_connection()          # reopen against the restored file
+    return DB_FILE
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +331,7 @@ DOC_REGISTRY = {
 
 
 # ---------------------------------------------------------------------------
-# Auth  (Login.php / admin table)
+# Auth
 # ---------------------------------------------------------------------------
 def authenticate(username, password):
     """Return admin row on success, else None (mirrors Login::userlogin)."""
@@ -186,25 +344,13 @@ def get_admin(admin_id=1):
 
 
 # ---------------------------------------------------------------------------
-# Clients / Suppliers  (Client_model / Supplier_model - shared `client` table)
+# Clients / Suppliers
 # ---------------------------------------------------------------------------
 def get_client_types():
     return DB.query("SELECT id, type FROM clienttype ORDER BY id")
 
 
 def list_clients(search="", u_type=None):
-    """List clients filtered by user type.
-
-    `u_type` may be:
-        None                       -> all rows (no filter)
-        int (0 / 1 / 2)            -> single type
-        list / tuple / set of ints -> multiple types via IN (...)
-                                      e.g. [0, 2]  Clients + Dual
-                                           [1, 2]  Suppliers + Dual
-
-    Used by the Manage-Clients / Suppliers pages, which both show their
-    own type PLUS Dual (u_type = 2).
-    """
     sql = "SELECT * FROM client"
     where, params = [], []
 
@@ -259,7 +405,7 @@ def get_next_client_id():
 
 
 # ---------------------------------------------------------------------------
-# Products  (Product_model)
+# Products
 # ---------------------------------------------------------------------------
 def list_products(search="", p_type=None):
     sql = "SELECT * FROM products"
@@ -322,32 +468,35 @@ def delete_techsps(tid):
 
 # ---------------------------------------------------------------------------
 # Invoices: Tax / Proforma / Quote / Purchase
-# (Taxinv, Proinv, Quote, Purchaseinv controllers + their models)
 # ---------------------------------------------------------------------------
 def next_invoice_no(doc):
-    """Replicates the FY-based generator, e.g. 'INV/24-25/0007'."""
+    """FY-based generator, e.g. 'INV/26-27/0007'."""
     import datetime
     reg = DOC_REGISTRY[doc]
     today = datetime.date.today()
     if today.month > 3:
         fy = f"{today.year % 100:02d}-{today.year % 100 + 1:02d}"
-        fy_start = datetime.date(today.year, 4, 1)
     else:
         fy = f"{today.year % 100 - 1:02d}-{today.year % 100:02d}"
-        fy_start = datetime.date(today.year - 1, 4, 1)
-    n = DB.scalar(f"SELECT COUNT(*) AS n FROM {reg['master']} WHERE created >= %s",
-                  (fy_start,), default=0)
-    if n == 0:
-        n = DB.scalar(f"SELECT COUNT(*) AS n FROM {reg['master']}", (), default=0)
-    return f"{reg['prefix']}/{fy}/{n + 1:04d}"
+    prefix = reg['prefix']
+    pattern = f"{prefix}/{fy}/%"
+    try:
+        rows = DB.query(f"SELECT invid FROM {reg['master']} WHERE invid LIKE %s",
+                        (pattern,))
+    except Exception:
+        rows = []
+    max_n = 0
+    for r in rows or []:
+        try:
+            invid = (r.get("invid") or "") if isinstance(r, dict) else str(r)
+            suffix = invid.rsplit("/", 1)[-1]
+            max_n = max(max_n, int(suffix))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return f"{prefix}/{fy}/{max_n + 1:04d}"
 
 
 def insert_invoice(doc, master, items):
-    """master: dict for master table; items: list of dicts for items table.
-
-    Note: `orderno` is AUTO_INCREMENT in all items tables (db.sql) so it is
-    never inserted - MySQL assigns it; the UI shows row numbers instead.
-    """
     reg = DOC_REGISTRY[doc]
     orderid = master["orderid"]
     mcols = ", ".join(master.keys())
@@ -367,7 +516,6 @@ def insert_invoice(doc, master, items):
 
 
 def update_invoice(doc, orderid, master, items):
-    """Replaces all items for an invoice and updates the master row."""
     reg = DOC_REGISTRY[doc]
     sets = ", ".join(f"{k}=%s" for k in master if k != "orderid")
     params = [v for k, v in master.items() if k != "orderid"]
@@ -406,12 +554,6 @@ def get_invoice(doc, orderid):
 
 
 def get_delivery_address(invid):
-    """`delivery_addresses` row for an invoice (Delivery_model::getdeliverydata).
-
-    The original view matches on `invid` exactly, but the table stores the
-    number with a leading space (' INV/24-25/00098'), so the comparison is
-    trimmed here - otherwise the delivery block on the print view stays empty.
-    """
     if not invid:
         return None
     return DB.one("SELECT * FROM delivery_addresses WHERE TRIM(invid)=TRIM(%s)"
@@ -421,7 +563,8 @@ def get_delivery_address(invid):
 def list_invoices(doc, start_date=None, end_date=None, search="", client_id=None):
     reg = DOC_REGISTRY[doc]
     dc = reg["date_col"]
-    sql = (f"SELECT m.*, c.c_name, c.mob, c.gst, c.c_add FROM {reg['master']} m"
+    sql = (f"SELECT m.*, m.{dc} AS doc_date, c.c_name, c.mob, c.gst, c.c_add"
+           f" FROM {reg['master']} m"
            f" LEFT JOIN client c ON c.cid = m.cid")
     where, params = [], []
     if start_date:
@@ -450,7 +593,7 @@ def get_items(doc, orderid):
 
 
 # ---------------------------------------------------------------------------
-# Quick Quote  (Quickquote controller/model)
+# Quick Quote
 # ---------------------------------------------------------------------------
 def next_quickquote_id():
     import datetime
@@ -490,8 +633,6 @@ def list_quickquotes(start_date=None, end_date=None, search=""):
 
 
 def get_quickquote(q_id):
-    """One quick quote joined to its product - port of
-    Quickquote_model::fulldata($id), which looks the record up by `q_id`."""
     return DB.one(
         "SELECT q.*, p.name AS product_name, p.hsn, p.img_loc, p.cattype"
         " FROM quickquote q LEFT JOIN products p ON p.p_id = q.p_id"
@@ -503,7 +644,7 @@ def delete_quickquote(sr_no):
 
 
 # ---------------------------------------------------------------------------
-# Transactions / Payments  (Transaction controller -> paidhistory)
+# Transactions / Payments
 # ---------------------------------------------------------------------------
 def list_transactions(start_date=None, end_date=None, search=""):
     sql = ("SELECT t.*, c.c_name, c.u_type FROM paidhistory t"
@@ -555,7 +696,7 @@ def get_banks():
 
 
 # ---------------------------------------------------------------------------
-# Accounts & Ledger  (Account controller / Account_model)
+# Accounts & Ledger
 # ---------------------------------------------------------------------------
 def get_account_types():
     return DB.query("SELECT * FROM acc_type ORDER BY id")
@@ -589,21 +730,12 @@ def get_next_account_id():
 
 
 def _current_fy_range():
-    """(start, end) dates of the running financial year (1 Apr - 31 Mar)."""
     t = date.today()
     y = t.year if t.month >= 4 else t.year - 1
     return f"{y}-04-01", f"{y + 1}-03-31"
 
 
 def list_account_closing_balances():
-    """Closing balance per account (aid -> float) for the CURRENT financial
-    year only (1 Apr - 31 Mar), with the exact same sign convention as
-    get_ledger_fy, driven by client.u_type:
-      u_type 0 (Customer): opening + Sales(credit) - Receipts(debit)
-      u_type 1 (Supplier): opening + Receipts(credit) - Purchases(debit)
-      u_type 2 (Dual):     opening + Sales + Receipts - Purchases
-    Opening balance is always account.opening_bal, as the ledger shows it.
-    """
     d0, d1 = _current_fy_range()
     rows = DB.query(
         "SELECT a.aid, "
@@ -627,8 +759,6 @@ def list_account_closing_balances():
 
 
 def get_fys_for_client(cid):
-    """Return distinct financial years (like '2024-2025') that have any
-    transaction for this client, plus the latest detected FY (None if no data)."""
     sql = (
         "SELECT DISTINCT "
         "CASE WHEN MONTH(t) >= 4 "
@@ -646,32 +776,24 @@ def get_fys_for_client(cid):
 
 
 def get_client_u_type(cid):
-    """Return the u_type (0=Customer, 1=Supplier, 2=Dual) for a client."""
     row = DB.one("SELECT u_type FROM client WHERE cid=%s", (cid,))
     return int(row["u_type"]) if row else 0
 
 
 def get_ledger_fy(cid, fy, u_type=None):
-    """Ledger for one financial year, matching Account.php getLedgerByFY / getLedgerDetails.
-              1=Purchase+Receipts (Purchase=debit, Receipt=credit),
-              2=Complete (Sales=credit, Purchase=debit, Receipt=credit).
-              If None, fetched from client.u_type.
-    """
     if u_type is None:
         u_type = get_client_u_type(cid)
     start_year, end_year = fy.split("-")
     start_date = f"{start_year}-04-01"
     end_date = f"{end_year}-03-31"
-    opening = float(
-        DB.one("SELECT COALESCE(opening_bal, 0) AS opening_bal FROM account WHERE cid=%s",
-               (cid,))["opening_bal"] or 0)
+    _acc = DB.one("SELECT COALESCE(opening_bal, 0) AS opening_bal"
+                  " FROM account WHERE cid=%s", (cid,))
+    opening = float((_acc or {}).get("opening_bal") or 0)
 
     if u_type == 0:
-        # Sales = Credit, Receipts = Debit  (Sales and Receipts Ledger)
         rows = DB.query(
             "SELECT "
-            "  CASE WHEN X.voucher_type='Receipt' THEN (@s := @s + 1) "
-            "       ELSE CONCAT(X.invoice_details, '+', COALESCE(X.orderid, 'N/A')) END AS ref, "
+            "  CONCAT(X.invoice_details, '+', COALESCE(X.orderid, 'N/A')) AS ref, "
             "  X.debit, X.credit, X.created, X.voucher_type "
             "FROM ("
             "  SELECT invtest2.orderid, invtest2.invid AS invoice_details, "
@@ -683,15 +805,13 @@ def get_ledger_fy(cid, fy, u_type=None):
             "         paidhistory.dateofpayment, 'Receipt' "
             "  FROM paidhistory WHERE paidhistory.cid=%s "
             "    AND paidhistory.dateofpayment BETWEEN %s AND %s"
-            ") AS X, (SELECT @s := 0) AS init "
+            ") AS X "
             "ORDER BY X.created ASC",
             (cid, start_date, end_date, cid, start_date, end_date))
     elif u_type == 1:
-        # Purchases = Debit, Receipts = Credit  (Purchase and Receipts Ledger)
         rows = DB.query(
             "SELECT "
-            "  CASE WHEN X.voucher_type='Receipt' THEN (@s := @s + 1) "
-            "       ELSE COALESCE(CONCAT(X.invoice_details, '+', X.orderid), 'N/A') END AS ref, "
+            "  COALESCE(CONCAT(X.invoice_details, '+', X.orderid), 'N/A') AS ref, "
             "  X.debit, X.credit, X.created, X.voucher_type "
             "FROM ("
             "  SELECT purchaseinv2.orderid, purchaseinv2.invid AS invoice_details, "
@@ -705,15 +825,13 @@ def get_ledger_fy(cid, fy, u_type=None):
             "         paidhistory.dateofpayment, 'Receipt' "
             "  FROM paidhistory WHERE paidhistory.cid=%s "
             "    AND paidhistory.dateofpayment BETWEEN %s AND %s"
-            ") AS X, (SELECT @s := 0) AS init "
+            ") AS X "
             "ORDER BY X.created ASC",
             (cid, start_date, end_date, cid, start_date, end_date))
     else:
-        # u_type == 2 : Complete Ledger (Sales=credit, Purchase=debit, Receipt=credit)
         rows = DB.query(
             "SELECT "
-            "  CASE WHEN X.voucher_type='Receipt' THEN (@s := @s + 1) "
-            "       WHEN X.voucher_type IN ('Sales', 'Purchase') "
+            "  CASE WHEN X.voucher_type IN ('Sales', 'Purchase') "
             "       THEN CONCAT(COALESCE(X.invoice_details, 'N/A'), '+', "
             "                   COALESCE(X.orderid, 'N/A')) "
             "       ELSE X.invoice_details END AS ref, "
@@ -735,14 +853,19 @@ def get_ledger_fy(cid, fy, u_type=None):
             "         paidhistory.dateofpayment, 'Receipt' "
             "  FROM paidhistory WHERE paidhistory.cid=%s "
             "    AND paidhistory.dateofpayment BETWEEN %s AND %s"
-            ") AS X, (SELECT @s := 0) AS init "
+            ") AS X "
             "ORDER BY X.created ASC",
             (cid, start_date, end_date,
              cid, start_date, end_date,
              cid, start_date, end_date))
 
+    _receipt_no = 0
+    for r in rows:
+        if r["voucher_type"] == "Receipt":
+            _receipt_no += 1
+            r["ref"] = str(_receipt_no)
+
     ledger_rows = []
-    # first row: opening balance
     ledger_rows.append({
         "ref": "OPENING BALANCE", "debit": 0.0, "credit": 0.0,
         "date": start_date, "voucher_type": "Opening",
@@ -764,7 +887,6 @@ def get_ledger_fy(cid, fy, u_type=None):
             "opening_bal": None, "closing_bal": balance,
         })
 
-    # footer row: totals + closing balance
     ledger_rows.append({
         "ref": "Closing Balance", "debit": total_debit, "credit": total_credit,
         "date": None, "voucher_type": "Total",
@@ -785,10 +907,9 @@ def get_ledger_fy(cid, fy, u_type=None):
 
 
 # ---------------------------------------------------------------------------
-# Reports (Sales / Purchase / Quotation - item, HSN & summary variants)
+# Reports
 # ---------------------------------------------------------------------------
 def item_report(doc, start_date=None, end_date=None, item=None):
-    """Item-wise report: items joined to master (Sale/Purchase/Quote Item Report)."""
     reg = DOC_REGISTRY[doc]
     dc = reg["date_col"]
     sel_desc = ("i.item_desc," if "item_desc" in reg["item_cols"]
@@ -852,7 +973,7 @@ def quickquote_report(start_date=None, end_date=None):
 
 
 # ---------------------------------------------------------------------------
-# Dashboard  (Dashboard controller / StatisticsModel)
+# Dashboard
 # ---------------------------------------------------------------------------
 def dashboard_stats():
     s = {}
@@ -890,7 +1011,7 @@ def monthly_sales(table_master, date_col, year=None):
     return [m.get(f"{y}-{mm:02d}", 0.0) for mm in range(1, 13)]
 
 
-# --- Donut chart sources (StatisticsModel) -------------------------------
+# --- Donut chart sources -------------------------------------------------
 MORRIS_COLORS = ["#0b62a4", "#7a92a3", "#a90329", "#f8b333", "#4da74d",
                  "#afd8f8", "#edc240", "#cb4b16", "#9440ac", "#6b6ecf"]
 
@@ -899,7 +1020,6 @@ _JOIN_IX = (("invtest", "orderid"), ("invtest2", "orderid"),
 
 
 def donut_consumables(start_year, end_year):
-    # consumablescount - Consumables qty sold in FY.
     d0, d1 = f"{start_year}-04-01", f"{end_year}-03-31"
     if _indexed(_JOIN_IX):
         try:
@@ -913,7 +1033,6 @@ def donut_consumables(start_year, end_year):
                 (d0, d1))
         except Exception:
             pass
-    # Fallback (no indexes yet / DDL blocked): Python join over cached lines.
     ids = {r["orderid"] for r in DB.query(
         "SELECT orderid FROM invtest2 WHERE created BETWEEN %s AND %s", (d0, d1))}
     if not ids:
@@ -933,7 +1052,6 @@ def donut_consumables(start_year, end_year):
 
 
 def donut_product_category(start_year, end_year):
-    # productcategorycount2 - top Machine products sold in FY (by line count).
     d0, d1 = f"{start_year}-04-01", f"{end_year}-03-31"
     if _indexed(_JOIN_IX):
         try:
@@ -947,7 +1065,6 @@ def donut_product_category(start_year, end_year):
                 (d0, d1))
         except Exception:
             pass
-    # Fallback: Python join over cached lines.
     ids = {r["orderid"] for r in DB.query(
         "SELECT orderid FROM invtest2 WHERE created BETWEEN %s AND %s", (d0, d1))}
     if not ids:
@@ -966,7 +1083,6 @@ def donut_product_category(start_year, end_year):
 
 
 def donut_user_category():
-    # usercategoryCount - GST / PAN / Adhaar / TIN split
     return DB.query(
         "SELECT CASE WHEN CHAR_LENGTH(gst) = 15 THEN 'GST'"
         " WHEN CHAR_LENGTH(gst) IN (10, 9) THEN 'PAN'"
@@ -981,7 +1097,6 @@ def donut_client_country():
 
 
 def donut_billed_clients():
-    # docCount - billed vs non-billed clients
     return DB.query(
         "SELECT CASE WHEN t2.cid IS NULL THEN 'Non-Billed Clients'"
         " ELSE 'Billed Clients' END AS label, COUNT(*) AS value"
@@ -990,8 +1105,6 @@ def donut_billed_clients():
 
 
 def donut_doc_count(start_year, end_year):
-    # doczCount - documents created in FY. NOTE: the old UNION+WHERE only
-    # filtered the LAST leg (quickquote); each leg needs its own date filter.
     d0, d1 = f"{start_year}-04-01", f"{end_year}-03-31"
     rows = DB.query(
         "SELECT 'Proforma Invoice' AS label, COUNT(invid) AS value FROM protest2"
@@ -1007,7 +1120,6 @@ def donut_doc_count(start_year, end_year):
 
 
 def donut_client_type():
-    # getclienttypecount
     return DB.query(
         "SELECT CASE WHEN u_type = 0 THEN 'Client' WHEN u_type = 1 THEN 'Supplier'"
         " WHEN u_type = 2 THEN 'Dual (Cust/Sup)' ELSE 'Unknown' END AS label,"
@@ -1016,11 +1128,10 @@ def donut_client_type():
 
 _INVTEST_CACHE = None
 _INVTEST_TS = 0
-_INVTEST_TTL = 600  # 10 min: invtest lines only change via invoice edits
+_INVTEST_TTL = 600
 
 
 def _invtest_lines():
-    # Narrow (orderid,item_name,quantity,price) scan shared by chart fallbacks.
     global _INVTEST_CACHE, _INVTEST_TS
     import time
     now = time.time()
@@ -1036,11 +1147,7 @@ def invalidate_invtest_cache():
     _INVTEST_CACHE, _INVTEST_TS = None, 0
 
 
-# --- Bar charts (StatisticsModel allyearsalesdata / allyeardata) ---------
 def fy_sales_chart(start_year, end_year):
-    # allyearsalesdata: monthly Turnover/Tax + top Machine item per month (FY).
-    # Fast SQL path when dashboard indexes exist; Python-join fallback when
-    # DDL was blocked. Top Machine item per month = highest SUM(qty).
     d0, d1 = f"{start_year}-04-01", f"{end_year}-03-31"
     months = DB.query(
         "SELECT YEAR(invtest2.created)*100+MONTH(invtest2.created) AS ym,"
@@ -1107,9 +1214,6 @@ def fy_sales_chart(start_year, end_year):
 
 
 def annual_turnover_chart():
-    # allyeardata: per financial year Turnover/GST + top Machine item (by qty).
-    # Fast SQL path when dashboard indexes exist; Python-join fallback when
-    # DDL was blocked.
     fy = DB.query(
         "SELECT CONCAT(YEAR(invtest2.created) - IF(MONTH(invtest2.created) < 4, 1, 0), '-',"
         " YEAR(invtest2.created) - IF(MONTH(invtest2.created) < 4, 0, -1)) AS financial_year,"
@@ -1172,9 +1276,6 @@ def annual_turnover_chart():
 
 
 def location_tree():
-    # gettreechart - top 25 client locations (last comma segment of c_add).
-    # Fast SQL path when dashboard indexes exist; Python fallback otherwise
-    # (both scan invtest<->invtest2 lines; client.cid is already indexed).
     _LOC_IX = _JOIN_IX + (("client", "cid"), ("invtest2", "cid"))
     if _indexed(_LOC_IX):
         try:
@@ -1207,7 +1308,6 @@ def location_tree():
                                reverse=True)[:25]]
 
 
-# --- Reminder tables (Dashboard::clientreminder) --------------------------
 def client_reminder():
     return DB.query(
         "SELECT protest2.invid, client.c_name, client.mob,"
@@ -1226,7 +1326,6 @@ def quickquote_reminder():
         " ORDER BY quickquote.q_id DESC LIMIT 7")
 
 
-# --- FY stats (footer blocks + FY banner) ---------------------------------
 def fy_years(limit=5):
     rows = DB.query(
         "SELECT CASE WHEN MONTH(created) >= 4"
@@ -1238,7 +1337,6 @@ def fy_years(limit=5):
 
 
 def fy_invoice_stats(start_year, end_year):
-    # getInvoiceStatsForFinancialYear
     r = DB.one(
         "SELECT COUNT(invid) AS total_invoices, SUM(totalitems) AS total_items,"
         " SUM(totalamount) AS total_amount, SUM(taxamount) AS total_tax"
@@ -1249,7 +1347,6 @@ def fy_invoice_stats(start_year, end_year):
 
 
 def current_month_stats():
-    # getClientCountForCurrentMonth / getInvoiceTotal / getInvCount / getBounceRate
     import datetime
     t = datetime.date.today()
     month_start = t.replace(day=1)
@@ -1276,20 +1373,12 @@ def current_month_stats():
 
 
 # ---------------------------------------------------------------------------
-# Settings  (Profile controller -> admin + bankdetails)
+# Settings
 # ---------------------------------------------------------------------------
 def update_admin(admin_id, data):
-    """Update only the provided columns of the admin row.
-
-    Pass a dict with any subset of:
-        username, name, email, qualification, location, skills,
-        c_name, c_add, profession, mob, gst, pan, picture, picturelogo,
-        password
-    """
     data = dict(data)
-    data.pop("id", None)          # never write the PK
+    data.pop("id", None)
 
-    # Allowed columns — protects against typos and SQL injection via keys
     allowed = {
         "username", "name", "email", "qualification", "location",
         "skills", "c_name", "c_add", "profession", "mob", "gst",
@@ -1305,16 +1394,15 @@ def update_admin(admin_id, data):
     return DB.execute(f"UPDATE admin SET {sets} WHERE id=%(id)s", params)
 
 
-
 def get_bank_details():
     return DB.one("SELECT * FROM bankdetails ORDER BY bid LIMIT 1")
 
 
-# ---------------------------------------------------------------------------
-# Sales Prediction / Repurchase Transactions
-# ---------------------------------------------------------------------------
+def list_bank_details():
+    return DB.query("SELECT * FROM bankdetails ORDER BY bid")
+
+
 def get_client_invoice_transactions():
-    """Fetch all tax invoices joined with client data for BG/NBD repurchase models."""
     return DB.query(
         "SELECT m.orderid, m.invid, m.cid, "
         "COALESCE(c.c_name, CONCAT('Client #', m.cid)) AS client_name, "
@@ -1339,13 +1427,21 @@ def save_bank_details(data):
         " VALUES (%(bname)s, %(ac)s, %(ifsc)s, %(branch)s)", data, return_id=True)
 
 
+def save_all_bank_details(banks):
+    DB.execute("DELETE FROM bankdetails")
+    for b in banks or []:
+        b = b or {}
+        DB.execute(
+            "INSERT INTO bankdetails (bname, ac, ifsc, branch)"
+            " VALUES (%(bname)s, %(ac)s, %(ifsc)s, %(branch)s)",
+            {"bname": (b.get("bname") or "").strip(),
+             "ac": (b.get("ac") or "").strip(),
+             "ifsc": (b.get("ifsc") or "").strip(),
+             "branch": (b.get("branch") or "").strip()})
+
+
 # ---------------------------------------------------------------------------
 # Client / Product / Supplier Info pages
-#   Python port of Client::viewclientinfo + Info layout/getclientinfo.php,
-#   Product::viewproductinfo + getproductinfo.php and
-#   supplier::viewsupplierinfo + getsupplierinfo.php.
-#   Each Info page shows a details box, a per-financial-year summary and one
-#   '... Invoice Details' table per document type.
 # ---------------------------------------------------------------------------
 INFO_DOCS = {
     "client":   [("tax", "Sales Tax Invoice Details"),
@@ -1359,14 +1455,12 @@ INFO_DOCS = {
 
 
 def _fy_expr(date_col):
-    """SQL for the '2024-2025' financial-year label of a date column."""
     return ("CASE WHEN MONTH({0}) >= 4 THEN CONCAT(YEAR({0}), '-',"
             " YEAR({0}) + 1) ELSE CONCAT(YEAR({0}) - 1, '-', YEAR({0}))"
             " END").format(date_col)
 
 
 def fy_turnover(master, id_col, id_val, date_col="created"):
-    """Turnover per financial year ('Turnover as per FY' box)."""
     fy = _fy_expr(date_col)
     return DB.query(
         f"SELECT {fy} AS fy, COUNT(*) AS invoices,"
@@ -1376,7 +1470,6 @@ def fy_turnover(master, id_col, id_val, date_col="created"):
 
 
 def yearly_item_sold(product_name):
-    """'Yearly Sold Item Count' box of the Product Info page."""
     fy = _fy_expr("m.created")
     return DB.query(
         f"SELECT {fy} AS fy, COALESCE(SUM(i.quantity), 0) AS quantity"
@@ -1386,13 +1479,6 @@ def yearly_item_sold(product_name):
 
 
 def info_invoices(kind, key, doc):
-    """Rows of a '... Invoice Details' table on an Info page.
-
-    Columns match the original DataTables (Invoice Id, Company Name,
-    Location, Item Name, Amount, Created) - Location is the last part of
-    the client address and Item Name the comma-joined item list.
-    `key` is the client/supplier id, or the product name when kind='product'.
-    """
     reg = DOC_REGISTRY[doc]
     master, items, dc = reg["master"], reg["items"], reg["date_col"]
     where = "i.item_name = %s" if kind == "product" else "m.cid = %s"
@@ -1413,7 +1499,6 @@ def _sum_amount(rows):
 
 
 def client_info(cid):
-    """Client details + FY turnover + tax/proforma invoice rows."""
     client = DB.one("SELECT * FROM client WHERE cid=%s", (cid,))
     if not client:
         return None
@@ -1430,7 +1515,6 @@ def client_info(cid):
 
 
 def supplier_info(cid):
-    """Supplier details + FY turnover + purchase/proforma/tax rows."""
     client = DB.one("SELECT * FROM client WHERE cid=%s", (cid,))
     if not client:
         return None
@@ -1447,7 +1531,6 @@ def supplier_info(cid):
 
 
 def product_info(p_id):
-    """Product details + tech specs + yearly sold + tax/proforma rows."""
     product = DB.one("SELECT * FROM products WHERE p_id=%s", (p_id,))
     if not product:
         return None

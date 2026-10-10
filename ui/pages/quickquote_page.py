@@ -288,10 +288,14 @@ class _QuickQuoteDialog(QDialog):
 class QuickQuotePage(QWidget):
     title = "Quick Quotation"
 
+    # Only these product types are quotable on this page (compared
+    # case-insensitively against products.p_type).
+    QUOTABLE_TYPES = ("Machine", "Consumables")
+
     def __init__(self, main):
         super().__init__()
         self.main = main
-        self.products = db_manager.list_products()
+        self.products = self._load_products()
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -315,6 +319,17 @@ class QuickQuotePage(QWidget):
 
         grid_box.add(scroll, 1)
         lay.addWidget(grid_box, 1)
+
+    # -------------------------------------------------------------- data
+    def _load_products(self):
+        """Products shown as cards: only Machine & Consumables, sorted in
+        ascending order by name (case-insensitive)."""
+        wanted = {t.lower() for t in self.QUOTABLE_TYPES}
+        rows = db_manager.list_products() or []
+        rows = [r for r in rows
+                if (r.get("p_type") or "").strip().lower() in wanted]
+        rows.sort(key=lambda r: (r.get("name") or "").strip().lower())
+        return rows
 
     # -------------------------------------------------------------- grid
     def _populate_grid(self):

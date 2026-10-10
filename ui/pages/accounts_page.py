@@ -169,32 +169,38 @@ class DTFooter(QWidget):
 
 
 class ColumnToggleStrip(QWidget):
+    """Row of checkable buttons that show/hide each table column.
+
+    Colours match the Ledger page strip: blue while the column is visible,
+    red once it is toggled off. Pinned to the bottom-LEFT corner.
+    """
+
     def __init__(self, parent, headers, table):
         super().__init__(parent)
         self._table = table
         h = QHBoxLayout(self)
         h.setContentsMargins(0, 8, 0, 0)
         h.setSpacing(4)
-        h.addStretch()
 
         for i, label in enumerate(headers):
             b = QPushButton(label)
             b.setFixedHeight(26)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet(
-                "QPushButton { background:#222222; color:#ffffff;"
-                " border:1px solid #000000; border-radius:3px;"
+                "QPushButton { background:#3c8dbc; color:#ffffff;"
+                " border:1px solid #367fa9; border-radius:3px;"
                 " padding:2px 10px; font-size:11.5px; }"
-                "QPushButton:hover { background:#3a3a3a; }"
-                "QPushButton:checked { background:#000000;"
-                " border-color:#000000; color:#ffffff; }"
-                "QPushButton:!checked { background:#888888;"
-                " border-color:#555555; }")
+                "QPushButton:hover { background:#367fa9; }"
+                "QPushButton:!checked { background:#dd4b39;"
+                " border-color:#c23321; }")
             b.setCheckable(True)
             b.setChecked(True)
             b.toggled.connect(
                 lambda on, col=i: table.setColumnHidden(col, not on))
             h.addWidget(b)
+
+        # trailing stretch pins the strip to the bottom-LEFT corner
+        h.addStretch()
 
 
 # =========================================================================== #

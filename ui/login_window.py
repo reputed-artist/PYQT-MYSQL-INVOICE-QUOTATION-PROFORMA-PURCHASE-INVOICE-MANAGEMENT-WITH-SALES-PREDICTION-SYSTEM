@@ -274,7 +274,14 @@ class LoginWindow(QWidget):
         self.admin = None
         self.setWindowTitle("Log in")
         self.setWindowIcon(app_icon())
-        self.setFixedSize(1100, 680)
+        # Was setFixedSize(1100, 680), which pinned the login dialog to a size
+        # that never matched the dashboard and could not be resized by the
+        # user. A minimum size plus the default size keeps the layout sensible
+        # while letting the window grow/shrink; main.py opens it maximized.
+        # The card is a fixed 400px wide inside stretch factors (2:3) and the
+        # particle field re-lays out in resizeEvent, so any size renders fine.
+        self.setMinimumSize(900, 600)
+        self.resize(1100, 680)
 
         self._particles = ParticleField(count=80, speed=0.4,
                                         link_distance=140, dot_radius=2.0)

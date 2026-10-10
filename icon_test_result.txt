@@ -26,6 +26,5 @@ OK   splash taskbar icon
 OK   apply(window) -> brand icon
 OK   apply(dialog) -> system menu hint
 OK   apply(window, icon) -> explicit icon wins
-previews written to C:\Users\Hacker\AppData\Local\Temp\aura_icons
 
 Icon test finished - 0 failures

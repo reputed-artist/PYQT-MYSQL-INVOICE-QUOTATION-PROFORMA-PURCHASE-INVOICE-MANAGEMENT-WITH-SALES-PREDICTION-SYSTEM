@@ -1,0 +1,26 @@
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+build/
+dist/Sales Aura/
+installer/*.exe
+*.spec.bak
+
+.pytest_cache/
+.mypy_cache/
+
+
+# User-generated data
+uploads/
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Secrets
+.env

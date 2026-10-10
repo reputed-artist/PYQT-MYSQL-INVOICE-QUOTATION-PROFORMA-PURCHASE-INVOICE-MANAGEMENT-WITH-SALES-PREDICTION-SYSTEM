@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (QWidget, QLabel, QHBoxLayout, QVBoxLayout, QFrame,
 
 from ui.app_icon import app_icon, apply
 from ui.icons import check_pixmap, kind_icon
+from config import UPLOAD_DIR, BUNDLE_IMG_DIR
 
 
 def theme_icon(name, color="#b8c7ce", size=32):
@@ -668,7 +669,7 @@ def export_csv(parent, headers, rows, default_name="export.csv", mode="csv"):
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
             printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
             printer.setOutputFileName(path)
-            doc.print_(printer)
+            doc.print(printer)
 
         else:
             error(parent, f"Unsupported export mode: {mode}")
@@ -878,8 +879,22 @@ class FormDialog(QDialog):
                 if cur is not None:
                     idx = w.findData(cur)
                     if idx < 0:
-                        w.addItem(str(cur), cur)
-                        idx = w.findData(cur)
+                        # No exact data match. Before appending the value as a
+                        # new row, check whether it is already present as the
+                        # visible text or as an equivalent string - otherwise
+                        # the combo ends up listing e.g. "IGST, Loc, Loc".
+                        # Appending is a genuine last resort, for a value that
+                        # is not in the option list at all.
+                        already = w.findText(str(cur)) >= 0
+                        if not already:
+                            for i in range(w.count()):
+                                if str(w.itemData(i)) == str(cur):
+                                    already = True
+                                    idx = i
+                                    break
+                        if not already:
+                            w.addItem(str(cur), cur)
+                            idx = w.findData(cur)
                     w.setCurrentIndex(max(0, idx))
             elif kind == "image":
                 w = ImagePickerField(values.get(key, ""))
@@ -925,8 +940,13 @@ class FormDialog(QDialog):
 # ---------------------------------------------------------------------------
 # Image picker
 # ---------------------------------------------------------------------------
-PRODUCT_IMG_DIR = os.path.join(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))), "..", "public", "dist", "img")
+PRODUCT_IMG_DIR = UPLOAD_DIR
+# Product pictures are user uploads, so they go to the same writable per-user
+# folder as the avatar / company logo (config.UPLOAD_DIR). The old path walked
+# up out of the app folder into `<repo>/../public/dist/img`, which inside a
+# frozen build resolves under `Program Files\Sales Aura` - read-only, so the
+# copy silently failed (it was wrapped in a bare `except: pass`) and the
+# product ended up without its picture.
 
 
 class ImagePickerField(QWidget):
@@ -965,9 +985,20 @@ class ImagePickerField(QWidget):
         self._current_filename = value or ""
 
     def _resolve_image_path(self, filename):
+        # Look in the writable uploads folder first (where a new pick is
+        # saved), then the historical read-only locations so product images
+        # stored by an older build or by the PHP app still resolve.
         base = os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))))
-        return os.path.join(base, "public", "dist", "img", filename)
+        candidates = [
+            os.path.join(PRODUCT_IMG_DIR, filename),
+            os.path.join(BUNDLE_IMG_DIR, filename),
+            os.path.join(base, "public", "dist", "img", filename),
+        ]
+        for cand in candidates:
+            if os.path.isfile(cand):
+                return cand
+        return candidates[0]
 
     def _pick(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1008,7 +1039,17 @@ class ImagePickerField(QWidget):
                 os.makedirs(PRODUCT_IMG_DIR, exist_ok=True)
                 shutil.copy2(src, os.path.join(PRODUCT_IMG_DIR, self._copied))
             except Exception:
-                pass
+                # Copying into the app folder can still fail (locked file,
+                # antivirus, genuinely read-only target). Previously this was
+                # swallowed and the product was saved pointing at a file that
+                # did not exist, so the picture silently vanished. Fall back
+                # to storing the absolute source path, which resolves and
+                # displays correctly.
+                fallback = os.path.abspath(src) if src else ""
+                if fallback:
+                    self.name_edit.setText(fallback)
+                    self._copied = ""
+                    self._current_filename = fallback
         return self.name_edit.text().strip()
 
 

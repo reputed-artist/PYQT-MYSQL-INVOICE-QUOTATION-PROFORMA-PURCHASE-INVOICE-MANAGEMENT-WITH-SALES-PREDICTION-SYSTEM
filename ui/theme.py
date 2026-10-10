@@ -2,7 +2,7 @@
 AdminLTE 2 theme ported to Qt stylesheets.
 Colours/fonts mirror the original views (header.php, sidebar.php, links.php).
 """
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QPointF, QRectF
 from PyQt6.QtGui import QIcon, QFont, QPainter, QPixmap, QColor
 
 # Segoe MDL2 Assets glyph codes (bundled with Windows 10/11) used for the
@@ -54,6 +54,34 @@ ICONS = {
 _icon_font = None
 
 
+# Brand marks that the Segoe MDL2 Assets font does not ship (that font has no
+# brand logos). These are drawn with QPainter instead of a font character and
+# are dispatched by name from icon().
+_BRAND_DRAWERS = ("facebook",)
+
+
+def _draw_facebook(p, size, color):
+    """Facebook 'f': a filled disc with a knocked-out 'f'."""
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(color))
+
+    p.save()
+    p.scale(size / 24.0, size / 24.0)
+
+    # filled circle
+    p.drawEllipse(QPointF(12, 12), 11, 11)
+
+    # Knock the 'f' out of the disc: one vertical stem running the full
+    # height, plus a horizontal cross bar near the top.
+    p.setCompositionMode(
+        QPainter.CompositionMode.CompositionMode_DestinationOut)
+    p.setBrush(Qt.GlobalColor.white)
+    p.drawRect(QRectF(10.2, 3.6, 3.2, 16.8))    # stem
+    p.drawRect(QRectF(6.9, 9.3, 9.6, 3.0))      # cross bar
+
+    p.restore()
+
+
 def _load_icon_font():
     global _icon_font
     if _icon_font is None:
@@ -64,12 +92,22 @@ def _load_icon_font():
 
 
 def icon(name: str, color: str = "#b8c7ce", size: int = 32) -> QIcon:
-    """Render a Segoe MDL2 glyph into a QIcon (falls back to a dot)."""
-    ch = ICONS.get(name, "\u25CF")
+    """Render a sidebar/app icon into a QIcon.
+
+    Brand marks (which the Segoe MDL2 font has no glyph for) are drawn with
+    QPainter; everything else uses the font glyph and falls back to a dot for
+    an unknown name.
+    """
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if name in _BRAND_DRAWERS:
+        _draw_facebook(p, size, color)
+        p.end()
+        return QIcon(pm)
+
+    ch = ICONS.get(name) or chr(0x25CF)
     f = QFont(_load_icon_font())
     f.setPixelSize(int(size * 0.6))
     p.setFont(f)
